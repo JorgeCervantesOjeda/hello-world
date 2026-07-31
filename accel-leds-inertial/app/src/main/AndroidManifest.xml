@@ -7,7 +7,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Ventana Adaptativa GPS"
+        android:label="Ventana Adaptativa GPS 2.2.1"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
