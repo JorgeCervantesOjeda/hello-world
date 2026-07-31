@@ -7,6 +7,10 @@ on:
     paths:
       - 'ventana-adaptativa-gps/**'
       - '.github/workflows/build-window-gps-v2.yml'
+  pull_request:
+    paths:
+      - 'ventana-adaptativa-gps/**'
+      - '.github/workflows/build-window-gps-v2.yml'
   workflow_dispatch:
 
 jobs:
