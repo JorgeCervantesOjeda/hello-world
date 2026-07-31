@@ -7,10 +7,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.example.accelledsinertial'
+        applicationId 'com.example.accelledsinertial.tworows'
         minSdk 26
         targetSdk 35
-        versionCode 2
+        versionCode 1
         versionName '2.1-dos-renglones'
     }
 }
