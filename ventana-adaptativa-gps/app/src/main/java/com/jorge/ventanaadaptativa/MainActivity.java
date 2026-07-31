@@ -3,6 +3,7 @@ package com.jorge.ventanaadaptativa;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -14,6 +15,7 @@ import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.CompoundButton;
@@ -32,10 +34,19 @@ public final class MainActivity extends Activity implements LocationListener {
     private static final double MANUAL_REFERENCE_GAP_MM = 30.0;
     private static final double MAX_GAP_MM = 450.0;
     private static final double FULL_OPEN_TOLERANCE_MM = 5.0;
+    private static final double ARRIVAL_TOLERANCE_MM = 3.0;
+    private static final double TARGET_RESTART_DIFFERENCE_MM = 5.0;
+    private static final double MIN_LEARNING_DISTANCE_MM = 20.0;
+    private static final double DEFAULT_FULL_TRAVEL_MS = 17000.0;
+    private static final double TIME_MARGIN_FACTOR = 1.4;
+    private static final long FIXED_TIME_MARGIN_MS = 300L;
+    private static final long MINIMUM_MOVE_TIMEOUT_MS = 1200L;
+    private static final double LEARNING_WEIGHT = 0.10;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private LocationManager locationManager;
+    private SharedPreferences preferences;
     private Switch enabledSwitch;
     private Switch testModeSwitch;
     private SeekBar gapSeek;
@@ -44,6 +55,7 @@ public final class MainActivity extends Activity implements LocationListener {
     private TextView gapText;
     private TextView stateText;
     private TextView referenceText;
+    private TextView timingText;
     private TextView sourceText;
     private WindowView windowView;
 
@@ -55,6 +67,11 @@ public final class MainActivity extends Activity implements LocationListener {
     private boolean gpsRunning;
     private boolean permissionRequested;
     private boolean programmaticGapChange;
+    private boolean automaticMoveInProgress;
+    private boolean completingFrozenTarget;
+    private boolean movementFault;
+    private boolean openingTimeLearned;
+    private boolean closingTimeLearned;
 
     private double speedKmh;
     private double filteredGpsKmh;
@@ -62,6 +79,13 @@ public final class MainActivity extends Activity implements LocationListener {
     private double referenceSpeedKmh;
     private double referenceGapMm;
     private double targetGapMm;
+    private double automaticMoveStartGapMm;
+    private double automaticMoveTargetGapMm;
+    private double learnedOpeningFullTravelMs = DEFAULT_FULL_TRAVEL_MS;
+    private double learnedClosingFullTravelMs = DEFAULT_FULL_TRAVEL_MS;
+
+    private long automaticMoveStartMs;
+    private long automaticMoveDeadlineMs;
 
     private final Runnable controlLoop = new Runnable() {
         @Override
@@ -75,9 +99,22 @@ public final class MainActivity extends Activity implements LocationListener {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        preferences = getSharedPreferences("window_timing", MODE_PRIVATE);
+        loadLearnedTravelTimes();
         buildInterface();
         handler.post(controlLoop);
         startGps();
+    }
+
+    private void loadLearnedTravelTimes() {
+        openingTimeLearned = preferences.getBoolean("opening_time_learned", false);
+        closingTimeLearned = preferences.getBoolean("closing_time_learned", false);
+        learnedOpeningFullTravelMs = preferences.getFloat(
+                "opening_full_travel_ms",
+                (float) DEFAULT_FULL_TRAVEL_MS);
+        learnedClosingFullTravelMs = preferences.getFloat(
+                "closing_full_travel_ms",
+                (float) DEFAULT_FULL_TRAVEL_MS);
     }
 
     private void buildInterface() {
@@ -144,11 +181,15 @@ public final class MainActivity extends Activity implements LocationListener {
         referenceText = text("Referencia: ninguna", 14, Color.DKGRAY);
         root.addView(referenceText);
 
+        timingText = text("Tiempo de recorrido: calculando", 14, Color.DKGRAY);
+        root.addView(timingText);
+
         TextView rules = text(
-                "Al activar, la apertura actual se toma como referencia. " +
-                "Si el vehículo está detenido, la velocidad se fija al superar 5 km/h. " +
-                "Mover manualmente la ventana solo suspende el control durante el movimiento. " +
-                "El mínimo automático es 25 mm y una apertura total en parado no crea referencia.",
+                "Al activar, la apertura actual se toma como referencia. "
+                        + "Si la velocidad baja de 5 km/h durante un movimiento automático, "
+                        + "se conserva el último objetivo válido y la ventana termina ese recorrido. "
+                        + "Después se suspende mientras la velocidad siga baja. "
+                        + "El límite de tiempo se calcula con el tiempo aprendido del recorrido completo.",
                 14,
                 Color.DKGRAY);
         rules.setPadding(0, dp(10), 0, dp(20));
@@ -158,6 +199,8 @@ public final class MainActivity extends Activity implements LocationListener {
             @Override
             public void onCheckedChanged(CompoundButton button, boolean checked) {
                 enabled = checked;
+                movementFault = false;
+                cancelAutomaticMovement();
                 if (enabled) {
                     activateFromCurrentOpening();
                     if (!testMode) {
@@ -224,6 +267,8 @@ public final class MainActivity extends Activity implements LocationListener {
                     return;
                 }
                 manualMoving = true;
+                movementFault = false;
+                cancelAutomaticMovement();
                 setState("Movimiento manual: automatización suspendida temporalmente.");
             }
 
@@ -242,6 +287,8 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void activateFromCurrentOpening() {
+        movementFault = false;
+
         if (isFullyOpenWhileStopped()) {
             clearReference();
             setState("Función habilitada, pero una apertura total en parado no define referencia.");
@@ -264,6 +311,9 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void finishManualMovement() {
+        movementFault = false;
+        cancelAutomaticMovement();
+
         if (!enabled) {
             clearReference();
             setState("Ajuste manual terminado. La función está apagada.");
@@ -289,10 +339,12 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private boolean isFullyOpenWhileStopped() {
-        return gapMm >= MAX_GAP_MM - FULL_OPEN_TOLERANCE_MM && speedKmh <= MIN_SPEED_KMH;
+        return gapMm >= MAX_GAP_MM - FULL_OPEN_TOLERANCE_MM
+                && speedKmh <= MIN_SPEED_KMH;
     }
 
     private void setPendingReference(double openingMm) {
+        cancelAutomaticMovement();
         active = false;
         pending = true;
         referenceGapMm = openingMm;
@@ -301,6 +353,7 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void captureReference() {
+        cancelAutomaticMovement();
         referenceSpeedKmh = Math.max(speedKmh, MIN_SPEED_KMH);
         referenceGapMm = gapMm;
         targetGapMm = gapMm;
@@ -309,6 +362,7 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void clearReference() {
+        cancelAutomaticMovement();
         active = false;
         pending = false;
         referenceSpeedKmh = 0.0;
@@ -317,7 +371,7 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void regulate() {
-        if (!enabled || manualMoving) {
+        if (!enabled || manualMoving || movementFault) {
             refresh();
             return;
         }
@@ -335,33 +389,190 @@ public final class MainActivity extends Activity implements LocationListener {
             return;
         }
 
-        if (speedKmh <= MIN_SPEED_KMH) {
-            setState("Control suspendido por baja velocidad. La referencia se conserva.");
+        boolean belowSpeedThreshold = speedKmh <= MIN_SPEED_KMH;
+
+        if (belowSpeedThreshold) {
+            if (automaticMoveInProgress) {
+                completingFrozenTarget = true;
+                targetGapMm = automaticMoveTargetGapMm;
+                advanceAutomaticMovement(true);
+            } else {
+                setState("Control suspendido por baja velocidad. No hay un movimiento pendiente.");
+                refresh();
+            }
+            return;
+        }
+
+        if (completingFrozenTarget) {
+            completingFrozenTarget = false;
+            cancelAutomaticMovement();
+        }
+
+        double newTargetMm = clamp(
+                referenceGapMm * referenceSpeedKmh / speedKmh,
+                MIN_AUTOMATIC_GAP_MM,
+                MAX_GAP_MM);
+        targetGapMm = newTargetMm;
+
+        if (Math.abs(newTargetMm - gapMm) <= ARRIVAL_TOLERANCE_MM) {
+            if (automaticMoveInProgress) {
+                finishAutomaticMovement(true);
+            }
+            setState(String.format(
+                    Locale.getDefault(),
+                    "Regulación activa. Objetivo alcanzado: %.0f mm.",
+                    newTargetMm));
             refresh();
             return;
         }
 
-        targetGapMm = clamp(
-                referenceGapMm * referenceSpeedKmh / speedKmh,
-                MIN_AUTOMATIC_GAP_MM,
-                MAX_GAP_MM);
-
-        double difference = targetGapMm - gapMm;
-        if (Math.abs(difference) >= 1.0) {
-            gapMm = clamp(
-                    gapMm + clamp(difference, -8.0, 8.0),
-                    MIN_AUTOMATIC_GAP_MM,
-                    MAX_GAP_MM);
-            programmaticGapChange = true;
-            gapSeek.setProgress((int) Math.round(gapMm));
-            programmaticGapChange = false;
+        if (!automaticMoveInProgress
+                || Math.abs(newTargetMm - automaticMoveTargetGapMm)
+                > TARGET_RESTART_DIFFERENCE_MM) {
+            beginAutomaticMovement(newTargetMm);
         }
 
-        setState(String.format(
-                Locale.getDefault(),
-                "Regulando automáticamente. Objetivo: %.0f mm.",
-                targetGapMm));
+        advanceAutomaticMovement(false);
+    }
+
+    private void beginAutomaticMovement(double targetMm) {
+        automaticMoveInProgress = true;
+        completingFrozenTarget = false;
+        automaticMoveStartGapMm = gapMm;
+        automaticMoveTargetGapMm = targetMm;
+        automaticMoveStartMs = SystemClock.elapsedRealtime();
+
+        double distanceMm = Math.abs(targetMm - gapMm);
+        double fullTravelMs = targetMm > gapMm
+                ? learnedOpeningFullTravelMs
+                : learnedClosingFullTravelMs;
+        double expectedPartialMs = fullTravelMs * distanceMm / MAX_GAP_MM;
+        long allowedMs = Math.max(
+                MINIMUM_MOVE_TIMEOUT_MS,
+                Math.round(expectedPartialMs * TIME_MARGIN_FACTOR + FIXED_TIME_MARGIN_MS));
+        automaticMoveDeadlineMs = automaticMoveStartMs + allowedMs;
+    }
+
+    private void advanceAutomaticMovement(boolean belowSpeedThreshold) {
+        if (!automaticMoveInProgress) {
+            return;
+        }
+
+        long nowMs = SystemClock.elapsedRealtime();
+        double differenceMm = automaticMoveTargetGapMm - gapMm;
+
+        if (Math.abs(differenceMm) <= ARRIVAL_TOLERANCE_MM) {
+            setGapProgrammatically(automaticMoveTargetGapMm);
+            finishAutomaticMovement(true);
+            if (belowSpeedThreshold) {
+                setState("Último objetivo alcanzado. Control suspendido mientras la velocidad siga por debajo de 5 km/h.");
+            }
+            refresh();
+            return;
+        }
+
+        if (nowMs > automaticMoveDeadlineMs) {
+            stopForMovementTimeout();
+            return;
+        }
+
+        setGapProgrammatically(clamp(
+                gapMm + clamp(differenceMm, -8.0, 8.0),
+                MIN_AUTOMATIC_GAP_MM,
+                MAX_GAP_MM));
+
+        if (Math.abs(automaticMoveTargetGapMm - gapMm) <= ARRIVAL_TOLERANCE_MM) {
+            setGapProgrammatically(automaticMoveTargetGapMm);
+            finishAutomaticMovement(true);
+            if (belowSpeedThreshold) {
+                setState("Último objetivo alcanzado. Control suspendido mientras la velocidad siga por debajo de 5 km/h.");
+            } else {
+                setState(String.format(
+                        Locale.getDefault(),
+                        "Objetivo automático alcanzado: %.0f mm.",
+                        targetGapMm));
+            }
+        } else if (belowSpeedThreshold) {
+            setState(String.format(
+                    Locale.getDefault(),
+                    "Velocidad baja: completando el último objetivo válido de %.0f mm.",
+                    automaticMoveTargetGapMm));
+        } else {
+            setState(String.format(
+                    Locale.getDefault(),
+                    "Regulando automáticamente. Objetivo: %.0f mm.",
+                    automaticMoveTargetGapMm));
+        }
         refresh();
+    }
+
+    private void setGapProgrammatically(double newGapMm) {
+        gapMm = newGapMm;
+        programmaticGapChange = true;
+        gapSeek.setProgress((int) Math.round(gapMm));
+        programmaticGapChange = false;
+    }
+
+    private void finishAutomaticMovement(boolean learnTiming) {
+        if (!automaticMoveInProgress) {
+            return;
+        }
+
+        long elapsedMs = Math.max(
+                1L,
+                SystemClock.elapsedRealtime() - automaticMoveStartMs);
+        double distanceMm = Math.abs(gapMm - automaticMoveStartGapMm);
+        boolean opening = automaticMoveTargetGapMm > automaticMoveStartGapMm;
+
+        if (learnTiming && distanceMm >= MIN_LEARNING_DISTANCE_MM) {
+            double equivalentFullTravelMs = elapsedMs * MAX_GAP_MM / distanceMm;
+            if (equivalentFullTravelMs >= 1000.0 && equivalentFullTravelMs <= 60000.0) {
+                updateLearnedTravelTime(opening, equivalentFullTravelMs);
+            }
+        }
+
+        cancelAutomaticMovement();
+    }
+
+    private void updateLearnedTravelTime(boolean opening, double measuredFullTravelMs) {
+        if (opening) {
+            learnedOpeningFullTravelMs = openingTimeLearned
+                    ? learnedOpeningFullTravelMs * (1.0 - LEARNING_WEIGHT)
+                    + measuredFullTravelMs * LEARNING_WEIGHT
+                    : measuredFullTravelMs;
+            openingTimeLearned = true;
+        } else {
+            learnedClosingFullTravelMs = closingTimeLearned
+                    ? learnedClosingFullTravelMs * (1.0 - LEARNING_WEIGHT)
+                    + measuredFullTravelMs * LEARNING_WEIGHT
+                    : measuredFullTravelMs;
+            closingTimeLearned = true;
+        }
+
+        preferences.edit()
+                .putBoolean("opening_time_learned", openingTimeLearned)
+                .putBoolean("closing_time_learned", closingTimeLearned)
+                .putFloat("opening_full_travel_ms", (float) learnedOpeningFullTravelMs)
+                .putFloat("closing_full_travel_ms", (float) learnedClosingFullTravelMs)
+                .apply();
+    }
+
+    private void stopForMovementTimeout() {
+        cancelAutomaticMovement();
+        movementFault = true;
+        active = false;
+        pending = false;
+        setState("Movimiento detenido: no alcanzó el objetivo dentro del tiempo calculado para el recorrido.");
+        refresh();
+    }
+
+    private void cancelAutomaticMovement() {
+        automaticMoveInProgress = false;
+        completingFrozenTarget = false;
+        automaticMoveStartGapMm = gapMm;
+        automaticMoveTargetGapMm = gapMm;
+        automaticMoveStartMs = 0L;
+        automaticMoveDeadlineMs = 0L;
     }
 
     private void refresh() {
@@ -383,6 +594,14 @@ public final class MainActivity extends Activity implements LocationListener {
         } else {
             referenceText.setText("Referencia: ninguna");
         }
+
+        timingText.setText(String.format(
+                Locale.getDefault(),
+                "Recorrido completo equivalente — abrir: %.1f s (%s), cerrar: %.1f s (%s)",
+                learnedOpeningFullTravelMs / 1000.0,
+                openingTimeLearned ? "aprendido" : "inicial",
+                learnedClosingFullTravelMs / 1000.0,
+                closingTimeLearned ? "aprendido" : "inicial"));
     }
 
     private void startGps() {
@@ -437,7 +656,9 @@ public final class MainActivity extends Activity implements LocationListener {
         if (testMode) {
             return;
         }
-        double rawSpeed = location.hasSpeed() ? Math.max(0.0, location.getSpeed() * 3.6) : 0.0;
+        double rawSpeed = location.hasSpeed()
+                ? Math.max(0.0, location.getSpeed() * 3.6)
+                : 0.0;
         filteredGpsKmh = filteredGpsKmh == 0.0
                 ? rawSpeed
                 : filteredGpsKmh * 0.75 + rawSpeed * 0.25;
