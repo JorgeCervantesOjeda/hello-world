@@ -15,4 +15,6 @@ Prototipo Android para visualizar aceleración y desaceleración con 20 segmento
 4. No cambies la posición del teléfono tras calibrarlo.
 5. Usa **AJUSTAR CERO** estando completamente detenido si aparece una pequeña lectura residual.
 
+Esta rama existe para compilar y validar el APK generado por GitHub Actions.
+
 Uso experimental en recinto seguro. No manipules el teléfono mientras conduces.
