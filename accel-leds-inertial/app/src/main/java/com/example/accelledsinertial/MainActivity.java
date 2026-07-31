@@ -3,312 +3,401 @@ package com.example.accelledsinertial;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.SystemClock;
-import android.view.MotionEvent;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Gravity;
 import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
+import android.widget.CompoundButton;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Switch;
+import android.widget.TextView;
 
 import java.util.Locale;
 
-public final class MainActivity extends Activity implements SensorEventListener, LocationListener {
-    private static final int REQ_LOCATION = 7;
-    private static final float LPF_TAU_S = 0.12f;
-    private static final float DEAD_ZONE = 0.09f;
+public final class MainActivity extends Activity implements LocationListener {
+    private static final int REQ_LOCATION = 1001;
+    private static final double MIN_SPEED = 5.0;
+    private static final double MIN_AUTO_GAP = 25.0;
+    private static final double ACTIVATION_GAP = 30.0;
+    private static final double MAX_GAP = 450.0;
 
-    private SensorManager sensorManager;
-    private Sensor motionSensor;
-    private boolean nativeLinearSensor;
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private LocationManager locationManager;
-    private LedView view;
-    private SharedPreferences prefs;
+    private Switch enabledSwitch;
+    private Switch testSwitch;
+    private SeekBar gapSeek;
+    private SeekBar speedSeek;
+    private TextView speedText;
+    private TextView gapText;
+    private TextView stateText;
+    private TextView referenceText;
+    private TextView sourceText;
+    private WindowView windowView;
 
-    private final float[] gravity = new float[3];
-    private final float[] filtered = new float[3];
-    private final float[] axis = new float[]{1f, 0f, 0f};
-    private float zeroBias;
-    private long lastSensorNs;
-    private float longitudinal;
-    private float gpsSpeed;
-    private float gpsAccuracy = Float.NaN;
-    private long lastGpsMs;
-    private boolean showInfo = true;
-    private boolean calibrated;
+    private boolean enabled;
+    private boolean testMode;
+    private boolean manualMoving;
+    private boolean active;
+    private boolean pending;
+    private boolean gpsRunning;
+    private boolean permissionRequested;
+    private double speedKmh;
+    private double filteredGpsKmh;
+    private double gapMm;
+    private double referenceSpeed;
+    private double referenceGap;
+    private double targetGap;
 
-    private int calibrationState; // 0 idle, 1 countdown, 2 collecting
-    private long calibrationStartMs;
-    private int calibrationSamples;
-    private final double[][] covariance = new double[3][3];
-    private final double[] calibrationMean = new double[3];
-    private String message = "Fija el teléfono y pulsa CALIBRAR";
+    private final Runnable loop = new Runnable() {
+        @Override public void run() {
+            regulate();
+            handler.postDelayed(this, 300L);
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        WindowManager.LayoutParams p = getWindow().getAttributes();
-        p.screenBrightness = 1f;
-        getWindow().setAttributes(p);
-        hideUi();
-
-        prefs = getSharedPreferences("calibration", MODE_PRIVATE);
-        calibrated = prefs.getBoolean("valid", false);
-        if (calibrated) {
-            axis[0] = prefs.getFloat("x", 1f);
-            axis[1] = prefs.getFloat("y", 0f);
-            axis[2] = prefs.getFloat("z", 0f);
-            zeroBias = prefs.getFloat("bias", 0f);
-            message = "Calibración cargada";
-        }
-
-        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-        motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-        nativeLinearSensor = motionSensor != null;
-        if (motionSensor == null) motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        view = new LedView(this);
-        setContentView(view);
-        startLocation();
+        buildUi();
+        handler.post(loop);
+        startGps();
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        hideUi();
-        if (motionSensor != null) sensorManager.registerListener(this, motionSensor, SensorManager.SENSOR_DELAY_GAME);
-        startLocation();
+    private void buildUi() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(18), dp(18), dp(24));
+        root.setBackgroundColor(Color.rgb(244, 247, 250));
+        scroll.addView(root);
+
+        TextView title = text("Ventana Adaptativa GPS", 27, Color.rgb(20, 38, 58));
+        title.setGravity(Gravity.CENTER);
+        root.addView(title);
+        TextView subtitle = text("GPS real y modo de prueba", 15, Color.DKGRAY);
+        subtitle.setGravity(Gravity.CENTER);
+        subtitle.setPadding(0, 0, 0, dp(12));
+        root.addView(subtitle);
+
+        enabledSwitch = new Switch(this);
+        enabledSwitch.setText("Activar control adaptativo");
+        enabledSwitch.setTextSize(18);
+        enabledSwitch.setChecked(false);
+        root.addView(enabledSwitch);
+
+        testSwitch = new Switch(this);
+        testSwitch.setText("Modo de prueba: velocidad simulada");
+        testSwitch.setTextSize(16);
+        root.addView(testSwitch);
+
+        sourceText = text("Fuente: GPS", 14, Color.DKGRAY);
+        root.addView(sourceText);
+        speedText = text("0.0 km/h", 30, Color.rgb(17, 87, 138));
+        speedText.setGravity(Gravity.CENTER);
+        root.addView(speedText);
+
+        speedSeek = new SeekBar(this);
+        speedSeek.setMax(160);
+        speedSeek.setVisibility(View.GONE);
+        root.addView(speedSeek);
+
+        windowView = new WindowView(this);
+        LinearLayout.LayoutParams vp = new LinearLayout.LayoutParams(-1, dp(260));
+        vp.setMargins(0, dp(10), 0, dp(8));
+        root.addView(windowView, vp);
+
+        gapText = text("Apertura: 0 mm", 26, Color.rgb(17, 87, 138));
+        gapText.setGravity(Gravity.CENTER);
+        root.addView(gapText);
+        root.addView(text("Control manual de apertura", 14, Color.DKGRAY));
+
+        gapSeek = new SeekBar(this);
+        gapSeek.setMax((int) MAX_GAP);
+        root.addView(gapSeek);
+
+        stateText = text("Función apagada por defecto.", 16, Color.rgb(25, 45, 66));
+        stateText.setPadding(dp(14), dp(14), dp(14), dp(14));
+        stateText.setBackgroundColor(Color.rgb(225, 234, 242));
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, -2);
+        sp.setMargins(0, dp(14), 0, dp(8));
+        root.addView(stateText, sp);
+
+        referenceText = text("Referencia: ninguna", 14, Color.DKGRAY);
+        root.addView(referenceText);
+        TextView rules = text(
+                "Mover la ventana manualmente pausa el control solo durante el movimiento. " +
+                "Al soltarla, la posición final crea una nueva referencia si la función está activada. " +
+                "El mínimo automático es 25 mm y abrir totalmente en parado elimina la referencia.",
+                14, Color.DKGRAY);
+        rules.setPadding(0, dp(10), 0, dp(20));
+        root.addView(rules);
+
+        enabledSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton button, boolean checked) {
+                enabled = checked;
+                if (enabled) {
+                    setState("Función habilitada y en espera de un ajuste manual válido.");
+                    if (!testMode) startGps();
+                } else {
+                    clearReference();
+                    setState("Función apagada. Control completamente manual.");
+                }
+                refresh();
+            }
+        });
+
+        testSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton button, boolean checked) {
+                testMode = checked;
+                speedSeek.setVisibility(testMode ? View.VISIBLE : View.GONE);
+                filteredGpsKmh = 0;
+                if (testMode) {
+                    stopGps();
+                    speedKmh = speedSeek.getProgress();
+                    sourceText.setText("Fuente: velocidad de prueba");
+                } else {
+                    speedKmh = 0;
+                    sourceText.setText("Fuente: GPS");
+                    startGps();
+                }
+                refresh();
+            }
+        });
+
+        speedSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                if (testMode) {
+                    speedKmh = value;
+                    refresh();
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { }
+        });
+
+        gapSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                gapMm = value;
+                refresh();
+                if (fromUser && manualMoving) {
+                    setState("Movimiento manual: automatización suspendida temporalmente.");
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {
+                manualMoving = true;
+                setState("Movimiento manual: automatización suspendida temporalmente.");
+            }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                manualMoving = false;
+                finishManualMovement();
+            }
+        });
+
+        setContentView(scroll);
+        refresh();
     }
 
-    @Override protected void onPause() {
-        sensorManager.unregisterListener(this);
-        stopLocation();
-        super.onPause();
+    private void finishManualMovement() {
+        if (!enabled) {
+            clearReference();
+            setState("Ajuste manual terminado. La función está apagada.");
+        } else if (speedKmh <= MIN_SPEED) {
+            if (gapMm >= MAX_GAP - 5) {
+                clearReference();
+                setState("Ventana totalmente abierta en parado: referencia eliminada. La función sigue habilitada.");
+            } else if (gapMm >= ACTIVATION_GAP) {
+                active = false;
+                pending = true;
+                referenceGap = gapMm;
+                referenceSpeed = 0;
+                setState("Ajuste manual terminado. El control se reactivará al superar 5 km/h.");
+            } else {
+                clearReference();
+                setState("Función habilitada, pero la apertura debe ser de al menos 30 mm.");
+            }
+        } else if (gapMm >= ACTIVATION_GAP) {
+            captureReference();
+            setState("Control reactivado con la nueva posición manual como referencia.");
+        } else {
+            clearReference();
+            setState("Función habilitada y en espera: abre al menos 30 mm.");
+        }
+        refresh();
     }
 
-    private void hideUi() {
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    private void captureReference() {
+        referenceSpeed = Math.max(speedKmh, MIN_SPEED);
+        referenceGap = gapMm;
+        targetGap = gapMm;
+        active = true;
+        pending = false;
     }
 
-    private void startLocation() {
-        if (locationManager == null) return;
-        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
+    private void clearReference() {
+        active = false;
+        pending = false;
+        referenceSpeed = 0;
+        referenceGap = 0;
+        targetGap = gapMm;
+    }
+
+    private void regulate() {
+        if (!enabled || manualMoving) {
+            refresh();
+            return;
+        }
+        if (pending && speedKmh > MIN_SPEED) {
+            referenceSpeed = speedKmh;
+            targetGap = referenceGap;
+            active = true;
+            pending = false;
+            setState("Control reactivado al iniciar la marcha.");
+        }
+        if (!active) {
+            refresh();
+            return;
+        }
+        if (speedKmh <= MIN_SPEED) {
+            setState("Control suspendido por baja velocidad. La referencia se conserva.");
+            refresh();
+            return;
+        }
+        targetGap = clamp(referenceGap * referenceSpeed / speedKmh, MIN_AUTO_GAP, MAX_GAP);
+        double delta = targetGap - gapMm;
+        if (Math.abs(delta) >= 1) {
+            gapMm = clamp(gapMm + clamp(delta, -8, 8), MIN_AUTO_GAP, MAX_GAP);
+            gapSeek.setProgress((int) Math.round(gapMm));
+        }
+        setState(String.format(Locale.getDefault(), "Regulando automáticamente. Objetivo: %.0f mm.", targetGap));
+        refresh();
+    }
+
+    private void refresh() {
+        speedText.setText(String.format(Locale.getDefault(), "%.1f km/h", speedKmh));
+        gapText.setText(String.format(Locale.getDefault(), "Apertura: %.0f mm", gapMm));
+        windowView.setGap(gapMm);
+        if (pending) {
+            referenceText.setText(String.format(Locale.getDefault(),
+                    "Referencia pendiente: %.0f mm; se fijará al superar 5 km/h", referenceGap));
+        } else if (active) {
+            referenceText.setText(String.format(Locale.getDefault(),
+                    "Referencia: %.0f mm a %.1f km/h", referenceGap, referenceSpeed));
+        } else {
+            referenceText.setText("Referencia: ninguna");
+        }
+    }
+
+    private void startGps() {
+        if (testMode || locationManager == null || gpsRunning) return;
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            if (!permissionRequested) {
+                permissionRequested = true;
+                requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
+            }
             return;
         }
         try {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this);
-        } catch (Exception ignored) { }
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, this);
+            gpsRunning = true;
+        } catch (RuntimeException e) {
+            setState("No se pudo iniciar el GPS. Usa el modo de prueba.");
+        }
     }
 
-    private void stopLocation() {
-        try { if (locationManager != null) locationManager.removeUpdates(this); } catch (Exception ignored) { }
+    private void stopGps() {
+        if (locationManager != null && gpsRunning) locationManager.removeUpdates(this);
+        gpsRunning = false;
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == REQ_LOCATION && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startLocation();
-    }
-
-    @Override public void onSensorChanged(SensorEvent event) {
-        final long ns = event.timestamp;
-        float dt = lastSensorNs == 0L ? 0.02f : Math.max(0.002f, Math.min(0.1f, (ns - lastSensorNs) / 1_000_000_000f));
-        lastSensorNs = ns;
-
-        float[] linear = new float[3];
-        if (nativeLinearSensor) {
-            linear[0] = event.values[0]; linear[1] = event.values[1]; linear[2] = event.values[2];
-        } else {
-            float gAlpha = LPF_TAU_S / (LPF_TAU_S + dt);
-            for (int i = 0; i < 3; i++) {
-                gravity[i] = gAlpha * gravity[i] + (1f - gAlpha) * event.values[i];
-                linear[i] = event.values[i] - gravity[i];
-            }
-        }
-
-        float alpha = dt / (LPF_TAU_S + dt);
-        for (int i = 0; i < 3; i++) filtered[i] += alpha * (linear[i] - filtered[i]);
-
-        updateCalibration();
-        if (calibrated && calibrationState == 0) {
-            float raw = dot(filtered, axis) - zeroBias;
-            longitudinal = Math.abs(raw) < DEAD_ZONE ? 0f : raw;
-        } else {
-            longitudinal = 0f;
-        }
-        view.invalidate();
-    }
-
-    private void beginCalibration() {
-        calibrated = false;
-        calibrationState = 1;
-        calibrationStartMs = SystemClock.elapsedRealtime();
-        calibrationSamples = 0;
-        for (int i = 0; i < 3; i++) {
-            calibrationMean[i] = 0;
-            for (int j = 0; j < 3; j++) covariance[i][j] = 0;
-        }
-        message = "CALIBRACIÓN: espera 3 s; después acelera suavemente y recto";
-    }
-
-    private void updateCalibration() {
-        if (calibrationState == 0) return;
-        long elapsed = SystemClock.elapsedRealtime() - calibrationStartMs;
-        if (calibrationState == 1 && elapsed >= 3000L) {
-            calibrationState = 2;
-            message = "ACELERA SUAVEMENTE HACIA DELANTE durante 5 s";
-        }
-        if (calibrationState == 2) {
-            float mag = magnitude(filtered);
-            if (mag > 0.10f && mag < 4.5f) {
-                calibrationSamples++;
-                for (int i = 0; i < 3; i++) {
-                    calibrationMean[i] += filtered[i];
-                    for (int j = 0; j < 3; j++) covariance[i][j] += filtered[i] * filtered[j];
-                }
-            }
-            if (elapsed >= 8000L) finishCalibration();
+        if (requestCode == REQ_LOCATION) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startGps();
+            else setState("Permiso GPS denegado. Usa el modo de prueba.");
         }
     }
-
-    private void finishCalibration() {
-        calibrationState = 0;
-        if (calibrationSamples < 15) {
-            message = "Calibración insuficiente. Repite con una aceleración más clara";
-            return;
-        }
-        double[] v = new double[]{1, 1, 1};
-        normalize(v);
-        for (int n = 0; n < 20; n++) {
-            double[] next = new double[3];
-            for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) next[i] += covariance[i][j] * v[j];
-            normalize(next);
-            v = next;
-        }
-        double sign = v[0] * calibrationMean[0] + v[1] * calibrationMean[1] + v[2] * calibrationMean[2];
-        if (sign < 0) for (int i = 0; i < 3; i++) v[i] = -v[i];
-        axis[0] = (float) v[0]; axis[1] = (float) v[1]; axis[2] = (float) v[2];
-        zeroBias = dot(filtered, axis);
-        calibrated = true;
-        prefs.edit().putBoolean("valid", true).putFloat("x", axis[0]).putFloat("y", axis[1]).putFloat("z", axis[2]).putFloat("bias", zeroBias).apply();
-        message = "Calibrado. No muevas el teléfono en su soporte";
-    }
-
-    private void setZero() {
-        if (!calibrated) return;
-        zeroBias = dot(filtered, axis);
-        prefs.edit().putFloat("bias", zeroBias).apply();
-        message = "Cero ajustado";
-    }
-
-    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
 
     @Override public void onLocationChanged(Location location) {
-        if (location != null && location.hasSpeed()) {
-            gpsSpeed = Math.max(0f, location.getSpeed());
-            if (Build.VERSION.SDK_INT >= 26 && location.hasSpeedAccuracy()) gpsAccuracy = location.getSpeedAccuracyMetersPerSecond();
-            lastGpsMs = SystemClock.elapsedRealtime();
-            view.invalidate();
-        }
+        if (testMode) return;
+        double raw = location.hasSpeed() ? Math.max(0, location.getSpeed() * 3.6) : 0;
+        filteredGpsKmh = filteredGpsKmh == 0 ? raw : filteredGpsKmh * 0.75 + raw * 0.25;
+        speedKmh = filteredGpsKmh;
+        refresh();
     }
     @Override public void onProviderEnabled(String provider) { }
-    @Override public void onProviderDisabled(String provider) { }
-    @SuppressWarnings("deprecation") @Override public void onStatusChanged(String provider, int status, Bundle extras) { }
-
-    private static float dot(float[] a, float[] b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
-    private static float magnitude(float[] a) { return (float)Math.sqrt(dot(a, a)); }
-    private static void normalize(double[] v) {
-        double m = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-        if (m < 1e-9) { v[0]=1; v[1]=0; v[2]=0; return; }
-        for (int i=0;i<3;i++) v[i] /= m;
+    @Override public void onProviderDisabled(String provider) {
+        speedKmh = 0;
+        setState("GPS desactivado. Control suspendido.");
+        refresh();
     }
-    private static float clamp(float x, float lo, float hi) { return Math.max(lo, Math.min(hi, x)); }
-    private static float level(float a, float max) {
-        if (a <= DEAD_ZONE) return 0f;
-        float u = (float)(Math.log1p((a-DEAD_ZONE)/0.15f) / Math.log1p((max-DEAD_ZONE)/0.15f));
-        return clamp(u * 10f, 0f, 10f);
+    @SuppressWarnings("deprecation")
+    @Override public void onStatusChanged(String provider, int status, Bundle extras) { }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (!testMode) startGps();
+    }
+    @Override protected void onPause() {
+        stopGps();
+        super.onPause();
+    }
+    @Override protected void onDestroy() {
+        handler.removeCallbacks(loop);
+        stopGps();
+        super.onDestroy();
     }
 
-    private final class LedView extends View {
+    private void setState(String value) { stateText.setText(value); }
+    private TextView text(String value, float size, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setPadding(0, dp(5), 0, dp(5));
+        return view;
+    }
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+    private static double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static final class WindowView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
-        LedView(Context c) { super(c); setBackgroundColor(Color.BLACK); }
-
-        @Override protected void onDraw(Canvas c) {
-            super.onDraw(c);
-            int w=getWidth(), h=getHeight();
-            float top=h*0.26f, bottom=h*0.73f, side=w*0.035f, gap=w*0.045f;
-            float slot=(w-side*2-gap)/20f, sw=slot*0.72f, cx=w/2f;
-            float green=level(Math.max(0,longitudinal),3.5f);
-            float red=level(Math.max(0,-longitudinal),7f);
-            for(int i=0;i<10;i++) {
-                float lx=cx-gap/2-slot*(i+1)+(slot-sw)/2;
-                float rx=cx+gap/2+slot*i+(slot-sw)/2;
-                segment(c,lx,top,sw,bottom-top,Color.rgb(0,255,70),green-i);
-                segment(c,rx,top,sw,bottom-top,Color.rgb(255,35,25),red-i);
+        private double gap;
+        WindowView(Context context) { super(context); }
+        void setGap(double value) { gap = clamp(value, 0, MAX_GAP); invalidate(); }
+        @Override protected void onDraw(Canvas canvas) {
+            float w = getWidth(), h = getHeight(), m = 20;
+            RectF frame = new RectF(m, m, w - m, h - m);
+            paint.setColor(Color.rgb(34, 45, 57));
+            canvas.drawRoundRect(frame, 24, 24, paint);
+            RectF inside = new RectF(frame.left + 12, frame.top + 12, frame.right - 12, frame.bottom - 12);
+            paint.setColor(Color.rgb(220, 232, 240));
+            canvas.drawRoundRect(inside, 16, 16, paint);
+            float openPixels = (float) (gap / MAX_GAP * inside.height());
+            float glassTop = inside.top + openPixels;
+            if (glassTop < inside.bottom) {
+                paint.setColor(Color.rgb(105, 174, 208));
+                canvas.drawRect(inside.left, glassTop, inside.right, inside.bottom, paint);
             }
-            drawButton(c,0,"CALIBRAR"); drawButton(c,1,showInfo?"OCULTAR INFO":"MOSTRAR INFO"); drawButton(c,2,"AJUSTAR CERO");
-            if(showInfo) drawInfo(c,w,h);
-            paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(h*0.038f); paint.setColor(Color.LTGRAY);
-            c.drawText(message,w/2f,h*0.88f,paint);
-            paint.setTextSize(h*0.027f); paint.setColor(Color.GRAY);
-            c.drawText("Uso experimental · teléfono fijado · no manipular al conducir",w/2f,h*0.97f,paint);
-        }
-
-        private void segment(Canvas c,float x,float y,float width,float height,int active,float amount) {
-            paint.setColor(amount>0 ? active : Color.rgb(18,18,18));
-            paint.setAlpha(amount>=1?255:amount>0?(int)(60+195*amount):255);
-            rect.set(x,y,x+width,y+height); c.drawRoundRect(rect,width*0.18f,width*0.18f,paint); paint.setAlpha(255);
-        }
-
-        private void drawButton(Canvas c,int index,String label) {
-            float margin=getWidth()*0.02f,gap=getWidth()*0.012f,bw=(getWidth()-2*margin-2*gap)/3f;
-            float x=margin+index*(bw+gap), y=getHeight()*0.035f, bh=getHeight()*0.13f;
-            paint.setColor(Color.rgb(32,32,32)); rect.set(x,y,x+bw,y+bh); c.drawRoundRect(rect,bh*0.2f,bh*0.2f,paint);
-            paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(getHeight()*0.045f); paint.setColor(Color.WHITE);
-            c.drawText(label,x+bw/2,y+bh*0.68f,paint);
-        }
-
-        private void drawInfo(Canvas c,int w,int h) {
-            paint.setTextAlign(Paint.Align.LEFT); paint.setTextSize(h*0.034f); paint.setColor(Color.rgb(190,190,190));
-            String gpsAge=lastGpsMs==0?"sin datos":(SystemClock.elapsedRealtime()-lastGpsMs)+" ms";
-            String[] lines={
-                String.format(Locale.US,"Aceleración: %+.3f m/s²",longitudinal),
-                String.format(Locale.US,"GPS: %.1f km/h · edad %s",gpsSpeed*3.6f,gpsAge),
-                "Sensor: "+(nativeLinearSensor?"aceleración lineal":"acelerómetro con gravedad estimada"),
-                String.format(Locale.US,"Eje aprendido: [%.2f, %.2f, %.2f]",axis[0],axis[1],axis[2]),
-                "Estado: "+(calibrated?"calibrado":"sin calibrar")
-            };
-            float y=h*0.78f; for(String s:lines){ c.drawText(s,w*0.035f,y,paint); y+=h*0.042f; }
-        }
-
-        @Override public boolean onTouchEvent(MotionEvent e) {
-            if(e.getAction()!=MotionEvent.ACTION_UP) return true;
-            float third=getWidth()/3f;
-            if(e.getY()<getHeight()*0.2f) {
-                if(e.getX()<third) beginCalibration();
-                else if(e.getX()<2*third) showInfo=!showInfo;
-                else setZero();
-                invalidate();
-            }
-            return true;
+            paint.setColor(Color.rgb(20, 38, 58));
+            paint.setTextSize(34);
+            paint.setTextAlign(Paint.Align.CENTER);
+            canvas.drawText(String.format(Locale.getDefault(), "%.0f mm", gap),
+                    w / 2, inside.top + Math.max(45, openPixels / 2), paint);
         }
     }
 }
