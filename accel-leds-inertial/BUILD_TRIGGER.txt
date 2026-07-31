@@ -1,2 +1,3 @@
 Ventana Adaptativa GPS 2.2.1 side-by-side installation build.
 Package: com.jorge.ventanaadaptativa.v221
+Build reason: avoid Android signing-key conflict with earlier prototype APKs.
