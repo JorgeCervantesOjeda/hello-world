@@ -11,7 +11,8 @@ Prototipo Android para visualizar aceleración y desaceleración con 20 segmento
 
 1. Fija el teléfono rígidamente al vehículo.
 2. Pulsa **CALIBRAR** estando detenido.
-3. Durante la fase indicada, acelera hacia delante en línea recta y después frena suavemente.
+3. Espera la cuenta inicial y acelera suavemente hacia delante, en línea recta, durante la fase indicada.
 4. No cambies la posición del teléfono tras calibrarlo.
+5. Usa **AJUSTAR CERO** estando completamente detenido si aparece una pequeña lectura residual.
 
 Uso experimental en recinto seguro. No manipules el teléfono mientras conduces.
