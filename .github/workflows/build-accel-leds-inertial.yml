@@ -5,6 +5,10 @@ on:
     paths:
       - 'accel-leds-inertial/**'
       - '.github/workflows/build-accel-leds-inertial.yml'
+  pull_request:
+    paths:
+      - 'accel-leds-inertial/**'
+      - '.github/workflows/build-accel-leds-inertial.yml'
   workflow_dispatch:
 
 jobs:
