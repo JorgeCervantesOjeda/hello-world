@@ -14,7 +14,43 @@ Prototipo Android que simula una función de software para ajustar automáticame
 - Abrir totalmente la ventana estando detenido no crea una referencia de flujo.
 - Incluye un modo de prueba para simular velocidad sin conducir.
 
-## Fórmula simulada
+## Caída de velocidad durante un movimiento
+
+Si la velocidad baja a 5 km/h o menos mientras la ventana todavía se dirige hacia un objetivo automático:
+
+1. Se congela el último objetivo calculado con una velocidad válida.
+2. La ventana continúa hasta alcanzar ese objetivo.
+3. Una vez alcanzado, el control se suspende mientras la velocidad siga por debajo del umbral.
+4. No se calculan objetivos nuevos utilizando una velocidad cercana a cero.
+5. Una intervención manual sigue cancelando inmediatamente el movimiento automático.
+
+## Aprendizaje del tiempo de recorrido
+
+La aplicación aprende por separado el tiempo equivalente del recorrido completo de apertura y de cierre.
+
+Cada movimiento automático completado mide:
+
+- posición inicial;
+- posición final;
+- distancia recorrida;
+- tiempo transcurrido;
+- sentido de movimiento.
+
+A partir de esos datos estima el tiempo equivalente para recorrer los 450 mm completos. Las mediciones se actualizan gradualmente y se guardan para las siguientes ejecuciones.
+
+El límite de un movimiento parcial se calcula como:
+
+```text
+tiempo_esperado = tiempo_recorrido_completo × distancia / 450
+
+tiempo_límite = tiempo_esperado × 1.4 + 0.3 segundos
+```
+
+Si la ventana no alcanza el objetivo dentro del tiempo calculado, el movimiento se detiene y la regulación queda anulada hasta una nueva intervención del usuario.
+
+En el simulador el tiempo completo inicial es de 17 segundos, coherente con la velocidad visual del cristal. Se sustituye por los valores aprendidos cuando existen movimientos suficientes para medirlo.
+
+## Fórmula de apertura
 
 ```text
 apertura_objetivo = apertura_referencia × velocidad_referencia / velocidad_actual
@@ -47,5 +83,7 @@ También se incluye un flujo de GitHub Actions que compila el APK y lo publica c
 ## Alcance
 
 Esta aplicación es un simulador visual. No se conecta al módulo de puertas ni controla ventanas reales.
+
+En una implementación real, el controlador del elevalunas debería medir los recorridos físicos usando su posición estimada, sus finales de carrera y el tiempo real del motor.
 
 No manipules la aplicación mientras conduces.
