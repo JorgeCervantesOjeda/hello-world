@@ -29,12 +29,10 @@ import java.util.Locale;
 public final class MainActivity extends Activity implements SensorEventListener, LocationListener {
     private static final int REQ_LOCATION = 7;
 
-    // Dos polos de filtrado: atenúan mucho más las vibraciones que un solo pasa bajas.
     private static final float LPF_STAGE_1_TAU_S = 0.075f;
     private static final float LPF_STAGE_2_TAU_S = 0.135f;
     private static final float GRAVITY_TAU_S = 0.90f;
 
-    // Histéresis y persistencia: el mismo signo debe mantenerse varias décimas.
     private static final float DETECT_THRESHOLD = 0.12f;
     private static final float RELEASE_THRESHOLD = 0.065f;
     private static final float REQUIRED_PERSISTENCE_S = 0.28f;
@@ -67,7 +65,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private float candidateTimeS;
     private float releaseTimeS;
 
-    private int calibrationState; // 0: idle, 1: detenido, 2: acelerando
+    private int calibrationState;
     private long calibrationStartMs;
     private int calibrationSamples;
     private int zeroSamples;
@@ -235,16 +233,13 @@ public final class MainActivity extends Activity implements SensorEventListener,
             return;
         }
 
-        // Entre ambos umbrales se conserva el estado confirmado: evita parpadeo.
         if (magnitude > RELEASE_THRESHOLD) {
             releaseTimeS = 0f;
-            if (confirmedSign == sign) longitudinal = value;
-            else longitudinal = 0f;
+            longitudinal = confirmedSign == sign ? value : 0f;
             candidateTimeS = Math.max(0f, candidateTimeS - dt);
             return;
         }
 
-        // Una pausa corta no apaga inmediatamente; una vibración aislada sí pierde confianza.
         candidateTimeS = Math.max(0f, candidateTimeS - 3f * dt);
         if (candidateTimeS == 0f) candidateSign = 0;
 
@@ -334,7 +329,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
         double sign = vector[0] * calibrationMean[0]
                 + vector[1] * calibrationMean[1]
                 + vector[2] * calibrationMean[2];
-        if (sign < 0) for (int i = 0; i < 3; i++) vector[i] = -vector[i];
+        if (sign < 0) {
+            for (int i = 0; i < 3; i++) vector[i] = -vector[i];
+        }
 
         axis[0] = (float) vector[0];
         axis[1] = (float) vector[1];
@@ -359,7 +356,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 .putFloat("bias", zeroBias)
                 .apply();
         resetMotionGate();
-        message = "Calibrado. Filtro antivibración activo";
+        message = "Calibrado. Indicador continuo activo";
     }
 
     private void setZero() {
@@ -370,7 +367,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
         message = "Cero ajustado";
     }
 
-    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+    }
 
     @Override
     public void onLocationChanged(Location location) {
@@ -381,10 +380,18 @@ public final class MainActivity extends Activity implements SensorEventListener,
         }
     }
 
-    @Override public void onProviderEnabled(String provider) {}
-    @Override public void onProviderDisabled(String provider) {}
+    @Override
+    public void onProviderEnabled(String provider) {
+    }
+
+    @Override
+    public void onProviderDisabled(String provider) {
+    }
+
     @SuppressWarnings("deprecation")
-    @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+    @Override
+    public void onStatusChanged(String provider, int status, Bundle extras) {
+    }
 
     private static float dot(float[] a, float[] b) {
         return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -395,7 +402,10 @@ public final class MainActivity extends Activity implements SensorEventListener,
     }
 
     private static void normalize(double[] vector) {
-        double m = Math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+        double m = Math.sqrt(
+                vector[0] * vector[0]
+                        + vector[1] * vector[1]
+                        + vector[2] * vector[2]);
         if (m < 1e-9) {
             vector[0] = 1;
             vector[1] = 0;
@@ -409,11 +419,12 @@ public final class MainActivity extends Activity implements SensorEventListener,
         return Math.max(minimum, Math.min(maximum, value));
     }
 
-    private static float level(float acceleration, float maximum) {
+    private static float fillFraction(float acceleration, float maximum) {
         if (acceleration <= DETECT_THRESHOLD) return 0f;
-        float normalized = (float) (Math.log1p((acceleration - DETECT_THRESHOLD) / 0.15f)
-                / Math.log1p((maximum - DETECT_THRESHOLD) / 0.15f));
-        return clamp(normalized * 10f, 0f, 10f);
+        float normalized = (float) (
+                Math.log1p((acceleration - DETECT_THRESHOLD) / 0.15f)
+                        / Math.log1p((maximum - DETECT_THRESHOLD) / 0.15f));
+        return clamp(normalized, 0f, 1f);
     }
 
     private final class LedView extends View {
@@ -428,97 +439,187 @@ public final class MainActivity extends Activity implements SensorEventListener,
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+
             int width = getWidth();
             int height = getHeight();
+            int side = Math.round(width * 0.035f);
+            int left = side;
+            int right = width - side;
+            int availablePixels = Math.max(1, right - left);
 
-            float redLevel = level(Math.max(0f, -longitudinal), 7f);
-            float greenLevel = level(Math.max(0f, longitudinal), 3.5f);
-            float side = width * 0.035f;
-            float slot = (width - 2f * side) / 10f;
-            float segmentWidth = slot * 0.72f;
-            float redTop = height * 0.23f;
-            float redBottom = height * 0.40f;
-            float greenTop = height * 0.46f;
-            float greenBottom = height * 0.63f;
+            float redFraction = fillFraction(Math.max(0f, -longitudinal), 7f);
+            float greenFraction = fillFraction(Math.max(0f, longitudinal), 3.5f);
+            int redPixels = Math.round(availablePixels * redFraction);
+            int greenPixels = Math.round(availablePixels * greenFraction);
 
-            for (int visualIndex = 0; visualIndex < 10; visualIndex++) {
-                float x = side + visualIndex * slot + (slot - segmentWidth) / 2f;
-                float redAmount = redLevel - (9 - visualIndex);
-                float greenAmount = greenLevel - visualIndex;
-                segment(canvas, x, redTop, segmentWidth, redBottom - redTop,
-                        Color.rgb(255, 35, 25), redAmount);
-                segment(canvas, x, greenTop, segmentWidth, greenBottom - greenTop,
-                        Color.rgb(0, 255, 70), greenAmount);
-            }
+            int redTop = Math.round(height * 0.23f);
+            int redBottom = Math.round(height * 0.40f);
+            int greenTop = Math.round(height * 0.46f);
+            int greenBottom = Math.round(height * 0.63f);
+
+            drawContinuousBar(
+                    canvas,
+                    left,
+                    right,
+                    redTop,
+                    redBottom,
+                    redPixels,
+                    true,
+                    Color.rgb(255, 35, 25),
+                    Color.rgb(35, 5, 5));
+
+            drawContinuousBar(
+                    canvas,
+                    left,
+                    right,
+                    greenTop,
+                    greenBottom,
+                    greenPixels,
+                    false,
+                    Color.rgb(0, 255, 70),
+                    Color.rgb(4, 32, 12));
 
             drawButton(canvas, 0, "CALIBRAR");
             drawButton(canvas, 1, showInfo ? "OCULTAR INFO" : "MOSTRAR INFO");
             drawButton(canvas, 2, "AJUSTAR CERO");
-            if (showInfo) drawInfo(canvas, width, height);
 
+            if (showInfo) {
+                drawInfo(canvas, width, height, redPixels, greenPixels, availablePixels);
+            }
+
+            paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setTextSize(height * 0.033f);
             paint.setColor(Color.LTGRAY);
             canvas.drawText(message, width / 2f, height * 0.91f, paint);
+
             paint.setTextSize(height * 0.024f);
             paint.setColor(Color.GRAY);
-            canvas.drawText("Uso experimental · teléfono fijado · no manipular al conducir",
-                    width / 2f, height * 0.98f, paint);
+            canvas.drawText(
+                    "Uso experimental · teléfono fijado · no manipular al conducir",
+                    width / 2f,
+                    height * 0.98f,
+                    paint);
         }
 
-        private void segment(Canvas canvas, float x, float y, float width, float height,
-                             int activeColor, float amount) {
-            paint.setColor(amount > 0f ? activeColor : Color.rgb(18, 18, 18));
-            paint.setAlpha(amount >= 1f ? 255 : amount > 0f ? (int) (60 + 195 * amount) : 255);
-            rectangle.set(x, y, x + width, y + height);
-            canvas.drawRoundRect(rectangle, width * 0.18f, width * 0.18f, paint);
+        private void drawContinuousBar(
+                Canvas canvas,
+                int left,
+                int right,
+                int top,
+                int bottom,
+                int activePixels,
+                boolean fromRight,
+                int activeColor,
+                int trackColor) {
+            paint.setAntiAlias(false);
+            paint.setAlpha(255);
+            paint.setColor(trackColor);
+            canvas.drawRect(left, top, right, bottom, paint);
+
+            int pixels = Math.max(0, Math.min(right - left, activePixels));
+            if (pixels == 0) return;
+
+            int activeLeft = fromRight ? right - pixels : left;
+            int activeRight = fromRight ? right : left + pixels;
+            paint.setColor(activeColor);
+            canvas.drawRect(activeLeft, top, activeRight, bottom, paint);
+
+            int edgeX = fromRight ? activeLeft : activeRight - 1;
+            paint.setColor(Color.WHITE);
+            paint.setAlpha(155);
+            canvas.drawRect(edgeX, top, edgeX + 1, bottom, paint);
             paint.setAlpha(255);
         }
 
         private void drawButton(Canvas canvas, int index, String label) {
+            paint.setAntiAlias(true);
             float margin = getWidth() * 0.02f;
             float gap = getWidth() * 0.012f;
             float buttonWidth = (getWidth() - 2f * margin - 2f * gap) / 3f;
             float x = margin + index * (buttonWidth + gap);
             float y = getHeight() * 0.035f;
             float buttonHeight = getHeight() * 0.13f;
+
             paint.setColor(Color.rgb(32, 32, 32));
             rectangle.set(x, y, x + buttonWidth, y + buttonHeight);
-            canvas.drawRoundRect(rectangle, buttonHeight * 0.2f, buttonHeight * 0.2f, paint);
+            canvas.drawRoundRect(
+                    rectangle,
+                    buttonHeight * 0.2f,
+                    buttonHeight * 0.2f,
+                    paint);
+
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setTextSize(getHeight() * 0.043f);
             paint.setColor(Color.WHITE);
-            canvas.drawText(label, x + buttonWidth / 2f, y + buttonHeight * 0.68f, paint);
+            canvas.drawText(
+                    label,
+                    x + buttonWidth / 2f,
+                    y + buttonHeight * 0.68f,
+                    paint);
         }
 
-        private void drawInfo(Canvas canvas, int width, int height) {
+        private void drawInfo(
+                Canvas canvas,
+                int width,
+                int height,
+                int redPixels,
+                int greenPixels,
+                int availablePixels) {
+            paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.LEFT);
             paint.setTextSize(height * 0.026f);
             paint.setColor(Color.rgb(190, 190, 190));
-            String gpsAge = lastGpsMs == 0 ? "sin datos"
+
+            String gpsAge = lastGpsMs == 0
+                    ? "sin datos"
                     : (SystemClock.elapsedRealtime() - lastGpsMs) + " ms";
-            float confidence = clamp(candidateTimeS / REQUIRED_PERSISTENCE_S, 0f, 1f) * 100f;
+            float confidence = clamp(
+                    candidateTimeS / REQUIRED_PERSISTENCE_S,
+                    0f,
+                    1f) * 100f;
+
             String[] lines = new String[]{
-                    String.format(Locale.US, "Salida: %+.3f m/s²", longitudinal),
-                    String.format(Locale.US, "Filtrada: %+.3f m/s² · confianza %.0f%%", rawLongitudinal, confidence),
-                    String.format(Locale.US, "GPS: %.1f km/h · edad %s", gpsSpeed * 3.6f, gpsAge),
+                    String.format(Locale.US, "Salida: %+.4f m/s²", longitudinal),
+                    String.format(
+                            Locale.US,
+                            "Filtrada: %+.4f m/s² · confianza %.0f%%",
+                            rawLongitudinal,
+                            confidence),
+                    String.format(
+                            Locale.US,
+                            "Píxeles: rojo %d · verde %d · ancho %d",
+                            redPixels,
+                            greenPixels,
+                            availablePixels),
+                    String.format(
+                            Locale.US,
+                            "GPS: %.1f km/h · edad %s",
+                            gpsSpeed * 3.6f,
+                            gpsAge),
                     "Filtro: dos etapas + persistencia 0.28 s",
                     "Estado: " + (calibrated ? "calibrado" : "sin calibrar")};
-            float y = height * 0.68f;
+
+            float y = height * 0.665f;
             for (String line : lines) {
                 canvas.drawText(line, width * 0.035f, y, paint);
-                y += height * 0.034f;
+                y += height * 0.032f;
             }
         }
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
             if (event.getAction() != MotionEvent.ACTION_UP) return true;
+
             float third = getWidth() / 3f;
             if (event.getY() < getHeight() * 0.2f) {
-                if (event.getX() < third) beginCalibration();
-                else if (event.getX() < 2f * third) showInfo = !showInfo;
-                else setZero();
+                if (event.getX() < third) {
+                    beginCalibration();
+                } else if (event.getX() < 2f * third) {
+                    showInfo = !showInfo;
+                } else {
+                    setZero();
+                }
                 invalidate();
             }
             return true;
