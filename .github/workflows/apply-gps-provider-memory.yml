@@ -1,0 +1,109 @@
+name: Apply GPS provider speed memory
+
+on:
+  push:
+    branches:
+      - agent/ventana-adaptativa-gps-clean
+    paths:
+      - .github/workflows/apply-gps-provider-memory.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/ventana-adaptativa-gps-clean
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Preserve speed through GPS provider interruptions
+        shell: python
+        run: |
+          from pathlib import Path
+
+          java_path = Path("ventana-adaptativa-gps/app/src/main/java/com/jorge/ventanaadaptativa/MainActivity.java")
+          text = java_path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  '                        + "la velocidad inicial es 0 km/h. GPS desactivado no se interpreta como velocidad cero.",',
+                  '                        + "la velocidad inicial es 0 km/h. Si el GPS se desactiva o se reactiva, "\n                        + "se conserva la última velocidad conocida hasta recibir otra válida.",',
+              ),
+              (
+                  '        } catch (RuntimeException error) {\n            speedValid = false;\n            setState("No se pudo iniciar el GPS. Usa el modo de prueba.");\n        }',
+                  '        } catch (RuntimeException error) {\n            speedValid = true;\n            sourceText.setText(String.format(\n                    Locale.getDefault(),\n                    "GPS no disponible; conservando %.1f km/h",\n                    speedKmh));\n            setState("GPS no disponible. El control continúa con la última velocidad conocida.");\n        }',
+              ),
+              (
+                  '            } else {\n                speedValid = false;\n                setState("Permiso GPS denegado. Usa el modo de prueba.");\n            }',
+                  '            } else {\n                speedValid = true;\n                sourceText.setText(String.format(\n                        Locale.getDefault(),\n                        "Permiso GPS denegado; conservando %.1f km/h",\n                        speedKmh));\n                setState("Sin permiso GPS. El control continúa con la última velocidad conocida.");\n            }',
+              ),
+              (
+                  '    public void onProviderEnabled(String provider) {\n    }',
+                  '    public void onProviderEnabled(String provider) {\n        if (!LocationManager.GPS_PROVIDER.equals(provider) || testMode) {\n            return;\n        }\n        speedValid = true;\n        sourceText.setText(String.format(\n                Locale.getDefault(),\n                "GPS reactivado; conservando %.1f km/h hasta una lectura nueva",\n                speedKmh));\n        setState("GPS reactivado. Se conserva la última velocidad conocida.");\n        refresh();\n    }',
+              ),
+              (
+                  '    public void onProviderDisabled(String provider) {\n        speedValid = false;\n        cancelAutomaticMovement();\n        sourceText.setText("Fuente: GPS desactivado");\n        setState("GPS desactivado. Control suspendido sin interpretar la condición como 0 km/h.");\n        refresh();\n    }',
+                  '    public void onProviderDisabled(String provider) {\n        if (!LocationManager.GPS_PROVIDER.equals(provider)) {\n            return;\n        }\n        speedValid = true;\n        sourceText.setText(String.format(\n                Locale.getDefault(),\n                "GPS desactivado; conservando %.1f km/h",\n                speedKmh));\n        setState("GPS desactivado. El control continúa con la última velocidad conocida.");\n        refresh();\n    }',
+              ),
+          ]
+
+          for old, new in replacements:
+              if old not in text:
+                  raise RuntimeError(f"Expected Java fragment not found: {old[:100]!r}")
+              text = text.replace(old, new, 1)
+
+          java_path.write_text(text, encoding="utf-8")
+
+          gradle_path = Path("ventana-adaptativa-gps/app/build.gradle")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          gradle = gradle.replace(
+              "applicationId 'com.jorge.ventanaadaptativa.github.v242'",
+              "applicationId 'com.jorge.ventanaadaptativa.github.v243'",
+          )
+          gradle = gradle.replace("versionName '2.4.2-github'", "versionName '2.4.3-github'")
+          gradle_path.write_text(gradle, encoding="utf-8")
+
+          readme_path = Path("ventana-adaptativa-gps/README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          section = (
+              "## Interrupciones del proveedor GPS\n\n"
+              "La velocidad se inicializa en 0 km/h únicamente al arrancar la aplicación. Después de "
+              "recibir velocidades reales, una actualización sin velocidad, la desactivación del proveedor "
+              "GPS o su reactivación conservan la última velocidad conocida. El valor no vuelve a cero al "
+              "reactivarse el proveedor; solo una nueva velocidad válida lo reemplaza.\n\n"
+          )
+          marker = "## Velocidad cero\n"
+          if section not in readme:
+              if marker not in readme:
+                  raise RuntimeError("README insertion marker not found")
+              readme = readme.replace(marker, section + marker, 1)
+          readme_path.write_text(readme, encoding="utf-8")
+
+      - name: Build debug APK
+        run: gradle -p ventana-adaptativa-gps assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VentanaAdaptativaGPS
+          path: ventana-adaptativa-gps/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Commit source and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-gps-provider-memory.yml
+          git add ventana-adaptativa-gps/app/src/main/java/com/jorge/ventanaadaptativa/MainActivity.java
+          git add ventana-adaptativa-gps/app/build.gradle
+          git add ventana-adaptativa-gps/README.md
+          git commit -m "Preserve speed through GPS provider interruptions"
+          git push origin HEAD:agent/ventana-adaptativa-gps-clean
