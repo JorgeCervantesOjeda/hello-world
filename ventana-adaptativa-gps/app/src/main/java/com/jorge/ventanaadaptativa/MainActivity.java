@@ -17,6 +17,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.CompoundButton;
 import android.widget.LinearLayout;
@@ -30,16 +31,13 @@ import java.util.Locale;
 public final class MainActivity extends Activity implements LocationListener {
     private static final int LOCATION_REQUEST = 1001;
 
-    // Esta velocidad mínima se usa únicamente al capturar una referencia.
+    // Solo se usa al capturar una referencia, nunca durante la operación.
     private static final double MIN_REFERENCE_SPEED_KMH = 5.0;
     private static final double ZERO_SPEED_EPSILON_KMH = 0.01;
 
-    private static final double MIN_AUTOMATIC_GAP_MM = 25.0;
-    private static final double MANUAL_REFERENCE_GAP_MM = 30.0;
     private static final double MAX_GAP_MM = 450.0;
-    private static final double FULL_OPEN_TOLERANCE_MM = 5.0;
-    private static final double ARRIVAL_TOLERANCE_MM = 3.0;
-    private static final double TARGET_RESTART_DIFFERENCE_MM = 5.0;
+    private static final double AUTOMATIC_POSITIVE_FLOOR_MM = Double.MIN_VALUE;
+    private static final double CONTROL_EPSILON_MM = 1.0e-9;
     private static final double AUTOMATIC_MOVEMENT_STEP_MM = 15.0;
 
     private static final double MIN_LEARNING_DISTANCE_MM = 20.0;
@@ -56,7 +54,6 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private Switch enabledSwitch;
     private Switch testModeSwitch;
-    private SeekBar gapSeek;
     private SeekBar speedSeek;
     private TextView speedText;
     private TextView gapText;
@@ -68,19 +65,20 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private boolean enabled;
     private boolean testMode;
-    private boolean speedValid = true;
     private boolean manualMoving;
     private boolean active;
-    private boolean pendingReference;
     private boolean gpsRunning;
     private boolean permissionRequested;
-    private boolean programmaticGapChange;
     private boolean automaticMoveInProgress;
     private boolean movementFault;
     private boolean openingTimeLearned;
     private boolean closingTimeLearned;
 
+    // La velocidad se inicializa una sola vez en cero. Las interrupciones GPS no la reinician.
     private double speedKmh = 0.0;
+    private double lastGpsSpeedKmh = 0.0;
+
+    // Todas las magnitudes de apertura permanecen en double.
     private double gapMm;
     private double referenceMeasuredSpeedKmh;
     private double referenceCalculationSpeedKmh;
@@ -136,7 +134,10 @@ public final class MainActivity extends Activity implements LocationListener {
         title.setGravity(Gravity.CENTER);
         root.addView(title);
 
-        TextView subtitle = text("Simulador con velocidad GPS y modo de prueba", 15, Color.DKGRAY);
+        TextView subtitle = text(
+                "Control continuo de apertura con velocidad GPS",
+                15,
+                Color.DKGRAY);
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setPadding(0, 0, 0, dp(12));
         root.addView(subtitle);
@@ -155,7 +156,7 @@ public final class MainActivity extends Activity implements LocationListener {
         sourceText = text("Fuente: GPS; velocidad inicial 0.0 km/h", 14, Color.DKGRAY);
         root.addView(sourceText);
 
-        speedText = text("— km/h", 30, Color.rgb(17, 87, 138));
+        speedText = text("0.0 km/h", 30, Color.rgb(17, 87, 138));
         speedText.setGravity(Gravity.CENTER);
         root.addView(speedText);
 
@@ -165,18 +166,41 @@ public final class MainActivity extends Activity implements LocationListener {
         root.addView(speedSeek);
 
         windowView = new WindowView(this);
-        LinearLayout.LayoutParams windowParams = new LinearLayout.LayoutParams(-1, dp(260));
+        windowView.setManualGapListener(new WindowView.ManualGapListener() {
+            @Override
+            public void onManualStart() {
+                manualMoving = true;
+                movementFault = false;
+                cancelAutomaticMovement();
+                setState("Movimiento manual: automatización suspendida temporalmente.");
+            }
+
+            @Override
+            public void onManualChange(double openingMm) {
+                gapMm = openingMm;
+                setState("Movimiento manual: automatización suspendida temporalmente.");
+                refresh();
+            }
+
+            @Override
+            public void onManualEnd() {
+                manualMoving = false;
+                finishManualMovement();
+            }
+        });
+        LinearLayout.LayoutParams windowParams = new LinearLayout.LayoutParams(-1, dp(300));
         windowParams.setMargins(0, dp(10), 0, dp(8));
         root.addView(windowView, windowParams);
 
         gapText = text("Apertura: 0 mm", 26, Color.rgb(17, 87, 138));
         gapText.setGravity(Gravity.CENTER);
         root.addView(gapText);
-        root.addView(text("Control manual de apertura", 14, Color.DKGRAY));
 
-        gapSeek = new SeekBar(this);
-        gapSeek.setMax((int) MAX_GAP_MM);
-        root.addView(gapSeek);
+        TextView manualHint = text(
+                "Arrastra verticalmente el borde del cristal. El control usa valores double sin convertirlos a enteros.",
+                14,
+                Color.DKGRAY);
+        root.addView(manualHint);
 
         stateText = text("Función apagada por defecto.", 16, Color.rgb(25, 45, 66));
         stateText.setPadding(dp(14), dp(14), dp(14), dp(14));
@@ -192,13 +216,12 @@ public final class MainActivity extends Activity implements LocationListener {
         root.addView(timingText);
 
         TextView rules = text(
-                "Al soltar el control manual se captura la apertura y la velocidad real. "
-                        + "Si esa velocidad es menor de 5 km/h, solo la velocidad de referencia "
-                        + "se eleva a 5 km/h. Durante la regulación se usa siempre la velocidad real, "
-                        + "aunque sea menor de 5 km/h. A 0 km/h el objetivo es la apertura máxima. "
-                        + "Si una actualización GPS no incluye una velocidad válida, se conserva la anterior; "
-                        + "la velocidad inicial es 0 km/h. Si el GPS se desactiva o se reactiva, "
-                        + "se conserva la última velocidad conocida hasta recibir otra válida.",
+                "Cualquier apertura manual positiva puede definir una referencia. "
+                        + "La velocidad de referencia se limita a un mínimo de 5 km/h solo al capturarla. "
+                        + "Durante la regulación se usa la velocidad real almacenada. "
+                        + "A 0 km/h el objetivo es 450 mm. Para cualquier velocidad positiva, "
+                        + "el objetivo automático se conserva como un double estrictamente mayor que cero. "
+                        + "Solo un cierre manual completo puede llevar la apertura a 0 mm y borrar la referencia.",
                 14,
                 Color.DKGRAY);
         rules.setPadding(0, dp(10), 0, dp(20));
@@ -227,18 +250,19 @@ public final class MainActivity extends Activity implements LocationListener {
             @Override
             public void onCheckedChanged(CompoundButton button, boolean checked) {
                 testMode = checked;
-                speedSeek.setVisibility(testMode ? View.VISIBLE : View.GONE);
                 cancelAutomaticMovement();
+                speedSeek.setVisibility(testMode ? View.VISIBLE : View.GONE);
 
                 if (testMode) {
                     stopGps();
                     speedKmh = speedSeek.getProgress();
-                    speedValid = true;
                     sourceText.setText("Fuente: velocidad de prueba");
                 } else {
-                    speedKmh = 0.0;
-                    speedValid = true;
-                    sourceText.setText("Fuente: GPS; velocidad inicial 0.0 km/h");
+                    speedKmh = lastGpsSpeedKmh;
+                    sourceText.setText(String.format(
+                            Locale.getDefault(),
+                            "Fuente: GPS; conservando %.1f km/h hasta una lectura nueva",
+                            speedKmh));
                     startGps();
                 }
                 refresh();
@@ -250,7 +274,6 @@ public final class MainActivity extends Activity implements LocationListener {
             public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
                 if (testMode) {
                     speedKmh = value;
-                    speedValid = true;
                     refresh();
                 }
             }
@@ -264,37 +287,6 @@ public final class MainActivity extends Activity implements LocationListener {
             }
         });
 
-        gapSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                gapMm = value;
-                refresh();
-                if (fromUser && manualMoving) {
-                    setState("Movimiento manual: automatización suspendida temporalmente.");
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar bar) {
-                if (programmaticGapChange) {
-                    return;
-                }
-                manualMoving = true;
-                movementFault = false;
-                cancelAutomaticMovement();
-                setState("Movimiento manual: automatización suspendida temporalmente.");
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar bar) {
-                if (programmaticGapChange) {
-                    return;
-                }
-                manualMoving = false;
-                finishManualMovement();
-            }
-        });
-
         setContentView(scroll);
         refresh();
     }
@@ -302,27 +294,15 @@ public final class MainActivity extends Activity implements LocationListener {
     private void activateFromCurrentOpening() {
         movementFault = false;
 
-        if (gapMm < MIN_AUTOMATIC_GAP_MM) {
+        if (gapMm <= 0.0) {
             clearReference();
-            setState("Función habilitada. La apertura actual es menor al mínimo automático de 25 mm.");
-            return;
-        }
-
-        if (!speedValid) {
-            setPendingReference(gapMm);
-            setState("Función habilitada con la apertura actual. Esperando una velocidad válida.");
-            return;
-        }
-
-        if (isFullyOpenAtZero()) {
-            clearReference();
-            setState("Función habilitada, pero una apertura total a cero no define una referencia.");
+            setState("Función habilitada. Abre manualmente la ventana para definir una referencia.");
             return;
         }
 
         captureReference(gapMm);
         setState(referenceMeasuredSpeedKmh < MIN_REFERENCE_SPEED_KMH
-                ? "Control activado. Referencia fijada con el límite mínimo de 5 km/h; operación con velocidad real."
+                ? "Control activado. Referencia fijada con 5 km/h; operación con velocidad real."
                 : "Control activado con la apertura y velocidad actuales como referencia.");
     }
 
@@ -333,40 +313,21 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!enabled) {
             clearReference();
             setState("Ajuste manual terminado. La función está apagada.");
-        } else if (gapMm < MANUAL_REFERENCE_GAP_MM) {
+        } else if (gapMm <= 0.0) {
+            gapMm = 0.0;
             clearReference();
-            setState("Función habilitada y en espera: abre al menos 30 mm después del ajuste manual.");
-        } else if (!speedValid) {
-            setPendingReference(gapMm);
-            setState("Ajuste manual terminado. Apertura guardada; esperando una velocidad válida.");
-        } else if (isFullyOpenAtZero()) {
-            clearReference();
-            setState("Ventana totalmente abierta a cero: referencia eliminada. La función sigue habilitada.");
+            setState("Cierre manual completo: referencia eliminada. La ventana permanecerá cerrada.");
         } else {
             captureReference(gapMm);
             setState(referenceMeasuredSpeedKmh < MIN_REFERENCE_SPEED_KMH
-                    ? "Nueva referencia: se usaron 5 km/h para fijarla y la operación continúa con la velocidad real."
-                    : "Control reactivado con la nueva posición manual como referencia.");
+                    ? "Nueva referencia positiva: se usaron 5 km/h para fijarla."
+                    : "Control reactivado con la nueva apertura manual como referencia.");
         }
         refresh();
     }
 
-    private boolean isFullyOpenAtZero() {
-        return gapMm >= MAX_GAP_MM - FULL_OPEN_TOLERANCE_MM && isZeroSpeed();
-    }
-
     private boolean isZeroSpeed() {
-        return speedValid && speedKmh <= ZERO_SPEED_EPSILON_KMH;
-    }
-
-    private void setPendingReference(double openingMm) {
-        cancelAutomaticMovement();
-        active = false;
-        pendingReference = true;
-        referenceGapMm = openingMm;
-        referenceMeasuredSpeedKmh = 0.0;
-        referenceCalculationSpeedKmh = 0.0;
-        targetGapMm = openingMm;
+        return speedKmh <= ZERO_SPEED_EPSILON_KMH;
     }
 
     private void captureReference(double openingMm) {
@@ -376,21 +337,11 @@ public final class MainActivity extends Activity implements LocationListener {
         referenceCalculationSpeedKmh = Math.max(speedKmh, MIN_REFERENCE_SPEED_KMH);
         targetGapMm = openingMm;
         active = true;
-        pendingReference = false;
-    }
-
-    private void activatePendingReference() {
-        referenceMeasuredSpeedKmh = speedKmh;
-        referenceCalculationSpeedKmh = Math.max(speedKmh, MIN_REFERENCE_SPEED_KMH);
-        targetGapMm = referenceGapMm;
-        active = true;
-        pendingReference = false;
     }
 
     private void clearReference() {
         cancelAutomaticMovement();
         active = false;
-        pendingReference = false;
         referenceMeasuredSpeedKmh = 0.0;
         referenceCalculationSpeedKmh = 0.0;
         referenceGapMm = 0.0;
@@ -403,20 +354,6 @@ public final class MainActivity extends Activity implements LocationListener {
             return;
         }
 
-        if (!speedValid) {
-            cancelAutomaticMovement();
-            setState("Velocidad no válida. Control suspendido sin generar un objetivo nuevo.");
-            refresh();
-            return;
-        }
-
-        if (pendingReference) {
-            activatePendingReference();
-            setState(referenceMeasuredSpeedKmh < MIN_REFERENCE_SPEED_KMH
-                    ? "Referencia iniciada con 5 km/h para el cálculo; regulación con velocidad real."
-                    : "Control iniciado con la apertura previamente seleccionada.");
-        }
-
         if (!active) {
             refresh();
             return;
@@ -425,24 +362,24 @@ public final class MainActivity extends Activity implements LocationListener {
         double newTargetMm = calculateTargetForRealSpeed(speedKmh);
         targetGapMm = newTargetMm;
 
-        if (Math.abs(newTargetMm - gapMm) <= ARRIVAL_TOLERANCE_MM) {
+        if (nearlyEqual(newTargetMm, gapMm)) {
             if (automaticMoveInProgress) {
                 finishAutomaticMovement(true);
             }
+            setGapProgrammatically(newTargetMm);
             setState(isZeroSpeed()
                     ? "Objetivo de 0 km/h alcanzado: apertura máxima."
                     : String.format(
                             Locale.getDefault(),
-                            "Regulación activa con velocidad real %.1f km/h. Objetivo: %.0f mm.",
+                            "Regulación continua a %.1f km/h. Objetivo: %s mm.",
                             speedKmh,
-                            newTargetMm));
+                            formatMillimeters(newTargetMm)));
             refresh();
             return;
         }
 
         if (!automaticMoveInProgress
-                || Math.abs(newTargetMm - automaticMoveTargetGapMm)
-                > TARGET_RESTART_DIFFERENCE_MM) {
+                || !nearlyEqual(newTargetMm, automaticMoveTargetGapMm)) {
             beginAutomaticMovement(newTargetMm);
         }
 
@@ -454,21 +391,29 @@ public final class MainActivity extends Activity implements LocationListener {
             return MAX_GAP_MM;
         }
 
-        return clamp(
-                referenceGapMm * referenceCalculationSpeedKmh / realSpeedKmh,
-                MIN_AUTOMATIC_GAP_MM,
-                MAX_GAP_MM);
+        double calculatedMm =
+                referenceGapMm * referenceCalculationSpeedKmh / realSpeedKmh;
+
+        if (Double.isNaN(calculatedMm)) {
+            return AUTOMATIC_POSITIVE_FLOOR_MM;
+        }
+        if (calculatedMm == Double.POSITIVE_INFINITY || calculatedMm >= MAX_GAP_MM) {
+            return MAX_GAP_MM;
+        }
+
+        // Nunca devuelve cero para una regulación automática con velocidad positiva.
+        return Math.max(AUTOMATIC_POSITIVE_FLOOR_MM, calculatedMm);
     }
 
     private void beginAutomaticMovement(double targetMm) {
         cancelAutomaticMovement();
         automaticMoveInProgress = true;
         automaticMoveStartGapMm = gapMm;
-        automaticMoveTargetGapMm = targetMm;
+        automaticMoveTargetGapMm = Math.max(AUTOMATIC_POSITIVE_FLOOR_MM, targetMm);
         automaticMoveStartMs = SystemClock.elapsedRealtime();
 
-        double distanceMm = Math.abs(targetMm - gapMm);
-        double fullTravelMs = targetMm > gapMm
+        double distanceMm = Math.abs(automaticMoveTargetGapMm - gapMm);
+        double fullTravelMs = automaticMoveTargetGapMm > gapMm
                 ? learnedOpeningFullTravelMs
                 : learnedClosingFullTravelMs;
         double expectedPartialMs = fullTravelMs * distanceMm / MAX_GAP_MM;
@@ -486,7 +431,7 @@ public final class MainActivity extends Activity implements LocationListener {
         long nowMs = SystemClock.elapsedRealtime();
         double differenceMm = automaticMoveTargetGapMm - gapMm;
 
-        if (Math.abs(differenceMm) <= ARRIVAL_TOLERANCE_MM) {
+        if (nearlyEqual(automaticMoveTargetGapMm, gapMm)) {
             completeAutomaticTarget();
             return;
         }
@@ -496,24 +441,34 @@ public final class MainActivity extends Activity implements LocationListener {
             return;
         }
 
+        double stepMm = clamp(
+                differenceMm,
+                -AUTOMATIC_MOVEMENT_STEP_MM,
+                AUTOMATIC_MOVEMENT_STEP_MM);
+        double nextGapMm = gapMm + stepMm;
+
+        if (automaticMoveTargetGapMm < gapMm) {
+            nextGapMm = Math.max(automaticMoveTargetGapMm, nextGapMm);
+        } else {
+            nextGapMm = Math.min(automaticMoveTargetGapMm, nextGapMm);
+        }
+
+        // El movimiento automático jamás puede ordenar un cierre total.
         setGapProgrammatically(clamp(
-                gapMm + clamp(
-                        differenceMm,
-                        -AUTOMATIC_MOVEMENT_STEP_MM,
-                        AUTOMATIC_MOVEMENT_STEP_MM),
-                MIN_AUTOMATIC_GAP_MM,
+                nextGapMm,
+                AUTOMATIC_POSITIVE_FLOOR_MM,
                 MAX_GAP_MM));
 
-        if (Math.abs(automaticMoveTargetGapMm - gapMm) <= ARRIVAL_TOLERANCE_MM) {
+        if (nearlyEqual(automaticMoveTargetGapMm, gapMm)) {
             completeAutomaticTarget();
         } else {
             setState(isZeroSpeed()
                     ? "Velocidad real 0 km/h: abriendo hacia 450 mm."
                     : String.format(
                             Locale.getDefault(),
-                            "Regulando con velocidad real %.1f km/h. Objetivo: %.0f mm.",
+                            "Regulando a %.1f km/h. Objetivo continuo: %s mm.",
                             speedKmh,
-                            automaticMoveTargetGapMm));
+                            formatMillimeters(automaticMoveTargetGapMm)));
             refresh();
         }
     }
@@ -525,17 +480,16 @@ public final class MainActivity extends Activity implements LocationListener {
                 ? "Objetivo de 0 km/h alcanzado: apertura máxima."
                 : String.format(
                         Locale.getDefault(),
-                        "Objetivo automático alcanzado con velocidad real %.1f km/h: %.0f mm.",
+                        "Objetivo automático alcanzado a %.1f km/h: %s mm.",
                         speedKmh,
-                        targetGapMm));
+                        formatMillimeters(targetGapMm)));
         refresh();
     }
 
     private void setGapProgrammatically(double newGapMm) {
-        gapMm = newGapMm;
-        programmaticGapChange = true;
-        gapSeek.setProgress((int) Math.round(gapMm));
-        programmaticGapChange = false;
+        // No se convierte a int; el estado y la vista reciben el double completo.
+        gapMm = clamp(newGapMm, AUTOMATIC_POSITIVE_FLOOR_MM, MAX_GAP_MM);
+        windowView.setGap(gapMm);
     }
 
     private void finishAutomaticMovement(boolean learnTiming) {
@@ -584,8 +538,7 @@ public final class MainActivity extends Activity implements LocationListener {
         cancelAutomaticMovement();
         movementFault = true;
         active = false;
-        pendingReference = false;
-        setState("Movimiento detenido: no alcanzó el objetivo dentro del tiempo calculado para el recorrido.");
+        setState("Movimiento detenido: no alcanzó el objetivo dentro del tiempo calculado.");
         refresh();
     }
 
@@ -598,31 +551,28 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void refresh() {
-        speedText.setText(speedValid
-                ? String.format(Locale.getDefault(), "%.1f km/h", speedKmh)
-                : "— km/h");
-        gapText.setText(String.format(Locale.getDefault(), "Apertura: %.0f mm", gapMm));
+        speedText.setText(String.format(Locale.getDefault(), "%.1f km/h", speedKmh));
+        gapText.setText(String.format(
+                Locale.getDefault(),
+                "Apertura: %s mm",
+                formatMillimeters(gapMm)));
         windowView.setGap(gapMm);
 
-        if (pendingReference) {
+        if (active) {
             referenceText.setText(String.format(
                     Locale.getDefault(),
-                    "Referencia pendiente: %.0f mm; esperando velocidad válida",
-                    referenceGapMm));
-        } else if (active) {
-            referenceText.setText(String.format(
-                    Locale.getDefault(),
-                    "Referencia: %.0f mm; velocidad real al capturar %.1f km/h; cálculo %.1f km/h",
-                    referenceGapMm,
+                    "Referencia: %s mm; velocidad medida %.1f km/h; cálculo %.1f km/h; objetivo %s mm",
+                    formatMillimeters(referenceGapMm),
                     referenceMeasuredSpeedKmh,
-                    referenceCalculationSpeedKmh));
+                    referenceCalculationSpeedKmh,
+                    formatMillimeters(targetGapMm)));
         } else {
             referenceText.setText("Referencia: ninguna");
         }
 
         timingText.setText(String.format(
                 Locale.getDefault(),
-                "Recorrido completo equivalente — abrir: %.1f s (%s), cerrar: %.1f s (%s)",
+                "Recorrido equivalente — abrir: %.1f s (%s), cerrar: %.1f s (%s)",
                 learnedOpeningFullTravelMs / 1000.0,
                 openingTimeLearned ? "aprendido" : "inicial",
                 learnedClosingFullTravelMs / 1000.0,
@@ -653,7 +603,6 @@ public final class MainActivity extends Activity implements LocationListener {
                     this);
             gpsRunning = true;
         } catch (RuntimeException error) {
-            speedValid = true;
             sourceText.setText(String.format(
                     Locale.getDefault(),
                     "GPS no disponible; conservando %.1f km/h",
@@ -676,7 +625,6 @@ public final class MainActivity extends Activity implements LocationListener {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
                 startGps();
             } else {
-                speedValid = true;
                 sourceText.setText(String.format(
                         Locale.getDefault(),
                         "Permiso GPS denegado; conservando %.1f km/h",
@@ -695,7 +643,8 @@ public final class MainActivity extends Activity implements LocationListener {
         if (location.hasSpeed()
                 && Float.isFinite(location.getSpeed())
                 && location.getSpeed() >= 0.0f) {
-            speedKmh = location.getSpeed() * 3.6;
+            lastGpsSpeedKmh = location.getSpeed() * 3.6;
+            speedKmh = lastGpsSpeedKmh;
             sourceText.setText("Fuente: GPS");
         } else {
             sourceText.setText(String.format(
@@ -704,7 +653,6 @@ public final class MainActivity extends Activity implements LocationListener {
                     speedKmh));
         }
 
-        speedValid = true;
         refresh();
     }
 
@@ -713,7 +661,7 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!LocationManager.GPS_PROVIDER.equals(provider) || testMode) {
             return;
         }
-        speedValid = true;
+
         sourceText.setText(String.format(
                 Locale.getDefault(),
                 "GPS reactivado; conservando %.1f km/h hasta una lectura nueva",
@@ -727,7 +675,7 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!LocationManager.GPS_PROVIDER.equals(provider)) {
             return;
         }
-        speedValid = true;
+
         sourceText.setText(String.format(
                 Locale.getDefault(),
                 "GPS desactivado; conservando %.1f km/h",
@@ -779,21 +727,107 @@ public final class MainActivity extends Activity implements LocationListener {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    private static boolean nearlyEqual(double first, double second) {
+        return Math.abs(first - second) <= CONTROL_EPSILON_MM;
+    }
+
     private static double clamp(double value, double minimum, double maximum) {
         return Math.max(minimum, Math.min(maximum, value));
     }
 
+    private static String formatMillimeters(double value) {
+        if (value == 0.0) {
+            return "0";
+        }
+        if (value > 0.0 && value < 1.0e-6) {
+            return String.format(Locale.getDefault(), "%.6e", value);
+        }
+        if (value < 1.0) {
+            return String.format(Locale.getDefault(), "%.9f", value);
+        }
+        return String.format(Locale.getDefault(), "%.6f", value);
+    }
+
     private static final class WindowView extends View {
+        interface ManualGapListener {
+            void onManualStart();
+
+            void onManualChange(double openingMm);
+
+            void onManualEnd();
+        }
+
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private double gapMm;
+        private ManualGapListener manualGapListener;
+        private boolean manualGestureActive;
 
         WindowView(Context context) {
             super(context);
+            setClickable(true);
         }
 
         void setGap(double value) {
             gapMm = clamp(value, 0.0, MAX_GAP_MM);
             invalidate();
+        }
+
+        void setManualGapListener(ManualGapListener listener) {
+            manualGapListener = listener;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    manualGestureActive = true;
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    if (manualGapListener != null) {
+                        manualGapListener.onManualStart();
+                        manualGapListener.onManualChange(openingFromTouch(event.getY()));
+                    }
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (manualGestureActive && manualGapListener != null) {
+                        manualGapListener.onManualChange(openingFromTouch(event.getY()));
+                    }
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                    if (manualGestureActive && manualGapListener != null) {
+                        manualGapListener.onManualChange(openingFromTouch(event.getY()));
+                        manualGapListener.onManualEnd();
+                    }
+                    manualGestureActive = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    performClick();
+                    return true;
+
+                case MotionEvent.ACTION_CANCEL:
+                    if (manualGestureActive && manualGapListener != null) {
+                        manualGapListener.onManualEnd();
+                    }
+                    manualGestureActive = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    return true;
+
+                default:
+                    return super.onTouchEvent(event);
+            }
+        }
+
+        @Override
+        public boolean performClick() {
+            super.performClick();
+            return true;
+        }
+
+        private double openingFromTouch(float touchY) {
+            double insideTop = 32.0;
+            double insideBottom = Math.max(insideTop + 1.0, getHeight() - 32.0);
+            double normalized = (touchY - insideTop) / (insideBottom - insideTop);
+            return clamp(normalized * MAX_GAP_MM, 0.0, MAX_GAP_MM);
         }
 
         @Override
@@ -822,10 +856,10 @@ public final class MainActivity extends Activity implements LocationListener {
             }
 
             paint.setColor(Color.rgb(20, 38, 58));
-            paint.setTextSize(34.0f);
+            paint.setTextSize(30.0f);
             paint.setTextAlign(Paint.Align.CENTER);
             canvas.drawText(
-                    String.format(Locale.getDefault(), "%.0f mm", gapMm),
+                    formatMillimeters(gapMm) + " mm",
                     width / 2.0f,
                     inside.top + Math.max(45.0f, openPixels / 2.0f),
                     paint);
