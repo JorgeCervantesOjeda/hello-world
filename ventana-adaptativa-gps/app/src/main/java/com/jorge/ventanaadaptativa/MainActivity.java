@@ -310,13 +310,11 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private void activateFromCurrentOpening() {
         movementFault = false;
-
         if (gapMm <= 0.0) {
             clearReference();
             setState("Función habilitada. Abre manualmente la ventana para definir una referencia.");
             return;
         }
-
         captureReference(gapMm);
         setState(referenceMeasuredSpeedKmh < MIN_REFERENCE_SPEED_KMH
                 ? "Control activado. Referencia fijada con 5 km/h; operación con velocidad real."
@@ -326,7 +324,6 @@ public final class MainActivity extends Activity implements LocationListener {
     private void finishManualMovement() {
         movementFault = false;
         cancelAutomaticMovement();
-
         if (!enabled) {
             clearReference();
             setState("Ajuste manual terminado. La función está apagada.");
@@ -370,7 +367,6 @@ public final class MainActivity extends Activity implements LocationListener {
             refresh();
             return;
         }
-
         if (!active) {
             refresh();
             return;
@@ -386,20 +382,16 @@ public final class MainActivity extends Activity implements LocationListener {
             setGapProgrammatically(newTargetMm);
             setState(isZeroSpeed()
                     ? "Objetivo de 0 km/h alcanzado: apertura máxima; flujo calculado igual a cero."
-                    : String.format(
-                            Locale.getDefault(),
+                    : String.format(Locale.getDefault(),
                             "Regulación continua a %.1f km/h. Objetivo: %s mm.",
-                            speedKmh,
-                            formatMillimeters(newTargetMm)));
+                            speedKmh, formatMillimeters(newTargetMm)));
             refresh();
             return;
         }
 
-        if (!automaticMoveInProgress
-                || !nearlyEqual(newTargetMm, automaticMoveTargetGapMm)) {
+        if (!automaticMoveInProgress || !nearlyEqual(newTargetMm, automaticMoveTargetGapMm)) {
             beginAutomaticMovement(newTargetMm);
         }
-
         advanceAutomaticMovement();
     }
 
@@ -407,10 +399,7 @@ public final class MainActivity extends Activity implements LocationListener {
         if (realSpeedKmh <= ZERO_SPEED_EPSILON_KMH) {
             return MAX_GAP_MM;
         }
-
-        double calculatedMm =
-                referenceGapMm * referenceCalculationSpeedKmh / realSpeedKmh;
-
+        double calculatedMm = referenceGapMm * referenceCalculationSpeedKmh / realSpeedKmh;
         if (Double.isNaN(calculatedMm)) {
             return AUTOMATIC_POSITIVE_FLOOR_MM;
         }
@@ -429,11 +418,9 @@ public final class MainActivity extends Activity implements LocationListener {
 
         double distanceMm = Math.abs(automaticMoveTargetGapMm - gapMm);
         double fullTravelMs = automaticMoveTargetGapMm > gapMm
-                ? learnedOpeningFullTravelMs
-                : learnedClosingFullTravelMs;
+                ? learnedOpeningFullTravelMs : learnedClosingFullTravelMs;
         double expectedPartialMs = fullTravelMs * distanceMm / MAX_GAP_MM;
-        long allowedMs = Math.max(
-                MINIMUM_MOVE_TIMEOUT_MS,
+        long allowedMs = Math.max(MINIMUM_MOVE_TIMEOUT_MS,
                 Math.round(expectedPartialMs * TIME_MARGIN_FACTOR + FIXED_TIME_MARGIN_MS));
         automaticMoveDeadlineMs = automaticMoveStartMs + allowedMs;
     }
@@ -442,47 +429,36 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!automaticMoveInProgress) {
             return;
         }
-
         long nowMs = SystemClock.elapsedRealtime();
         double differenceMm = automaticMoveTargetGapMm - gapMm;
-
         if (nearlyEqual(automaticMoveTargetGapMm, gapMm)) {
             completeAutomaticTarget();
             return;
         }
-
         if (nowMs > automaticMoveDeadlineMs) {
             stopForMovementTimeout();
             return;
         }
 
-        double stepMm = clamp(
-                differenceMm,
-                -AUTOMATIC_MOVEMENT_STEP_MM,
-                AUTOMATIC_MOVEMENT_STEP_MM);
+        double stepMm = clamp(differenceMm,
+                -AUTOMATIC_MOVEMENT_STEP_MM, AUTOMATIC_MOVEMENT_STEP_MM);
         double nextGapMm = gapMm + stepMm;
-
         if (automaticMoveTargetGapMm < gapMm) {
             nextGapMm = Math.max(automaticMoveTargetGapMm, nextGapMm);
         } else {
             nextGapMm = Math.min(automaticMoveTargetGapMm, nextGapMm);
         }
-
-        setGapProgrammatically(clamp(
-                nextGapMm,
-                AUTOMATIC_POSITIVE_FLOOR_MM,
-                MAX_GAP_MM));
+        setGapProgrammatically(clamp(nextGapMm,
+                AUTOMATIC_POSITIVE_FLOOR_MM, MAX_GAP_MM));
 
         if (nearlyEqual(automaticMoveTargetGapMm, gapMm)) {
             completeAutomaticTarget();
         } else {
             setState(isZeroSpeed()
                     ? "Velocidad real 0 km/h: abriendo hacia 450 mm; flujo calculado igual a cero."
-                    : String.format(
-                            Locale.getDefault(),
+                    : String.format(Locale.getDefault(),
                             "Regulando a %.1f km/h. Objetivo continuo: %s mm.",
-                            speedKmh,
-                            formatMillimeters(automaticMoveTargetGapMm)));
+                            speedKmh, formatMillimeters(automaticMoveTargetGapMm)));
             refresh();
         }
     }
@@ -492,11 +468,9 @@ public final class MainActivity extends Activity implements LocationListener {
         finishAutomaticMovement(true);
         setState(isZeroSpeed()
                 ? "Objetivo de 0 km/h alcanzado: apertura máxima; flujo calculado igual a cero."
-                : String.format(
-                        Locale.getDefault(),
+                : String.format(Locale.getDefault(),
                         "Objetivo automático alcanzado a %.1f km/h: %s mm.",
-                        speedKmh,
-                        formatMillimeters(targetGapMm)));
+                        speedKmh, formatMillimeters(targetGapMm)));
         refresh();
     }
 
@@ -509,18 +483,15 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!automaticMoveInProgress) {
             return;
         }
-
         long elapsedMs = Math.max(1L, SystemClock.elapsedRealtime() - automaticMoveStartMs);
         double distanceMm = Math.abs(gapMm - automaticMoveStartGapMm);
         boolean opening = automaticMoveTargetGapMm > automaticMoveStartGapMm;
-
         if (learnTiming && distanceMm >= MIN_LEARNING_DISTANCE_MM) {
             double equivalentFullTravelMs = elapsedMs * MAX_GAP_MM / distanceMm;
             if (equivalentFullTravelMs >= 1000.0 && equivalentFullTravelMs <= 60000.0) {
                 updateLearnedTravelTime(opening, equivalentFullTravelMs);
             }
         }
-
         cancelAutomaticMovement();
     }
 
@@ -538,7 +509,6 @@ public final class MainActivity extends Activity implements LocationListener {
                     : measuredFullTravelMs;
             closingTimeLearned = true;
         }
-
         preferences.edit()
                 .putBoolean("opening_time_learned", openingTimeLearned)
                 .putBoolean("closing_time_learned", closingTimeLearned)
@@ -564,10 +534,7 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private double requestedFlow() {
-        if (!active) {
-            return 0.0;
-        }
-        return referenceGapMm * referenceCalculationSpeedKmh;
+        return active ? referenceGapMm * referenceCalculationSpeedKmh : 0.0;
     }
 
     private double calculatedFlow() {
@@ -576,50 +543,35 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private void refresh() {
         speedText.setText(String.format(Locale.getDefault(), "%.1f km/h", speedKmh));
-        gapText.setText(String.format(
-                Locale.getDefault(),
-                "Apertura: %s mm",
-                formatMillimeters(gapMm)));
+        gapText.setText(String.format(Locale.getDefault(),
+                "Apertura: %s mm", formatMillimeters(gapMm)));
         windowView.setGap(gapMm);
 
         double calculated = calculatedFlow();
-        calculatedFlowText.setText(String.format(
-                Locale.getDefault(),
-                "Flujo real calculado: %s mm·km/h",
-                formatFlow(calculated)));
+        calculatedFlowText.setText(String.format(Locale.getDefault(),
+                "Flujo real calculado: %s mm·km/h", formatFlow(calculated)));
 
         if (active) {
             double requested = requestedFlow();
             double difference = calculated - requested;
             double differencePercent = requested > 0.0
-                    ? difference * 100.0 / requested
-                    : 0.0;
-
-            requestedFlowText.setText(String.format(
-                    Locale.getDefault(),
-                    "Flujo solicitado: %s mm·km/h",
-                    formatFlow(requested)));
-            flowDifferenceText.setText(String.format(
-                    Locale.getDefault(),
+                    ? difference * 100.0 / requested : 0.0;
+            requestedFlowText.setText(String.format(Locale.getDefault(),
+                    "Flujo solicitado: %s mm·km/h", formatFlow(requested)));
+            flowDifferenceText.setText(String.format(Locale.getDefault(),
                     "Diferencia: %s mm·km/h (%+.3f%%)",
-                    formatSignedFlow(difference),
-                    differencePercent));
-
-            referenceText.setText(String.format(
-                    Locale.getDefault(),
+                    formatSignedFlow(difference), differencePercent));
+            referenceText.setText(String.format(Locale.getDefault(),
                     "Referencia: %s mm; velocidad medida %.1f km/h; cálculo %.1f km/h; objetivo %s mm",
-                    formatMillimeters(referenceGapMm),
-                    referenceMeasuredSpeedKmh,
-                    referenceCalculationSpeedKmh,
-                    formatMillimeters(targetGapMm)));
+                    formatMillimeters(referenceGapMm), referenceMeasuredSpeedKmh,
+                    referenceCalculationSpeedKmh, formatMillimeters(targetGapMm)));
         } else {
             requestedFlowText.setText("Flujo solicitado: sin referencia");
             flowDifferenceText.setText("Diferencia: sin referencia");
             referenceText.setText("Referencia: ninguna");
         }
 
-        timingText.setText(String.format(
-                Locale.getDefault(),
+        timingText.setText(String.format(Locale.getDefault(),
                 "Recorrido equivalente — abrir: %.1f s (%s), cerrar: %.1f s (%s)",
                 learnedOpeningFullTravelMs / 1000.0,
                 openingTimeLearned ? "aprendido" : "inicial",
@@ -631,30 +583,22 @@ public final class MainActivity extends Activity implements LocationListener {
         if (testMode || locationManager == null || gpsRunning) {
             return;
         }
-
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
             if (!permissionRequested) {
                 permissionRequested = true;
-                requestPermissions(
-                        new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
                         LOCATION_REQUEST);
             }
             return;
         }
-
         try {
-            locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    500L,
-                    0.0f,
-                    this);
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER,
+                    500L, 0.0f, this);
             gpsRunning = true;
         } catch (RuntimeException error) {
-            sourceText.setText(String.format(
-                    Locale.getDefault(),
-                    "GPS no disponible; conservando %.1f km/h",
-                    speedKmh));
+            sourceText.setText(String.format(Locale.getDefault(),
+                    "GPS no disponible; conservando %.1f km/h", speedKmh));
             setState("GPS no disponible. El control continúa con la última velocidad conocida.");
         }
     }
@@ -673,10 +617,8 @@ public final class MainActivity extends Activity implements LocationListener {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
                 startGps();
             } else {
-                sourceText.setText(String.format(
-                        Locale.getDefault(),
-                        "Permiso GPS denegado; conservando %.1f km/h",
-                        speedKmh));
+                sourceText.setText(String.format(Locale.getDefault(),
+                        "Permiso GPS denegado; conservando %.1f km/h", speedKmh));
                 setState("Sin permiso GPS. El control continúa con la última velocidad conocida.");
             }
         }
@@ -687,18 +629,14 @@ public final class MainActivity extends Activity implements LocationListener {
         if (testMode) {
             return;
         }
-
-        if (location.hasSpeed()
-                && Float.isFinite(location.getSpeed())
+        if (location.hasSpeed() && Float.isFinite(location.getSpeed())
                 && location.getSpeed() >= 0.0f) {
             lastGpsSpeedKmh = location.getSpeed() * 3.6;
             speedKmh = lastGpsSpeedKmh;
             sourceText.setText("Fuente: GPS");
         } else {
-            sourceText.setText(String.format(
-                    Locale.getDefault(),
-                    "Fuente: GPS; sin velocidad nueva, conservando %.1f km/h",
-                    speedKmh));
+            sourceText.setText(String.format(Locale.getDefault(),
+                    "Fuente: GPS; sin velocidad nueva, conservando %.1f km/h", speedKmh));
         }
         refresh();
     }
@@ -708,10 +646,8 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!LocationManager.GPS_PROVIDER.equals(provider) || testMode) {
             return;
         }
-        sourceText.setText(String.format(
-                Locale.getDefault(),
-                "GPS reactivado; conservando %.1f km/h hasta una lectura nueva",
-                speedKmh));
+        sourceText.setText(String.format(Locale.getDefault(),
+                "GPS reactivado; conservando %.1f km/h hasta una lectura nueva", speedKmh));
         setState("GPS reactivado. Se conserva la última velocidad conocida.");
         refresh();
     }
@@ -721,10 +657,8 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!LocationManager.GPS_PROVIDER.equals(provider)) {
             return;
         }
-        sourceText.setText(String.format(
-                Locale.getDefault(),
-                "GPS desactivado; conservando %.1f km/h",
-                speedKmh));
+        sourceText.setText(String.format(Locale.getDefault(),
+                "GPS desactivado; conservando %.1f km/h", speedKmh));
         setState("GPS desactivado. El control continúa con la última velocidad conocida.");
         refresh();
     }
@@ -781,52 +715,36 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private static String formatMillimeters(double value) {
-        if (value == 0.0) {
-            return "0";
-        }
-        if (value > 0.0 && value < 1.0e-6) {
+        if (value == 0.0) return "0";
+        if (value > 0.0 && value < 1.0e-6)
             return String.format(Locale.getDefault(), "%.6e", value);
-        }
-        if (value < 1.0) {
+        if (value < 1.0)
             return String.format(Locale.getDefault(), "%.9f", value);
-        }
         return String.format(Locale.getDefault(), "%.6f", value);
     }
 
     private static String formatFlow(double value) {
-        if (!Double.isFinite(value)) {
-            return "no finito";
-        }
-        if (value == 0.0) {
-            return "0";
-        }
+        if (!Double.isFinite(value)) return "no finito";
+        if (value == 0.0) return "0";
         double magnitude = Math.abs(value);
-        if (magnitude < 1.0e-6 || magnitude >= 1.0e9) {
+        if (magnitude < 1.0e-6 || magnitude >= 1.0e9)
             return String.format(Locale.getDefault(), "%.6e", value);
-        }
-        if (magnitude < 1.0) {
+        if (magnitude < 1.0)
             return String.format(Locale.getDefault(), "%.9f", value);
-        }
         return String.format(Locale.getDefault(), "%.6f", value);
     }
 
     private static String formatSignedFlow(double value) {
         String formatted = formatFlow(Math.abs(value));
-        if (value > 0.0) {
-            return "+" + formatted;
-        }
-        if (value < 0.0) {
-            return "−" + formatted;
-        }
+        if (value > 0.0) return "+" + formatted;
+        if (value < 0.0) return "−" + formatted;
         return "0";
     }
 
     private static final class WindowView extends View {
         interface ManualGapListener {
             void onManualStart();
-
             void onManualChange(double openingMm);
-
             void onManualEnd();
         }
 
@@ -860,13 +778,10 @@ public final class MainActivity extends Activity implements LocationListener {
                         manualGapListener.onManualChange(openingFromTouch(event.getY()));
                     }
                     return true;
-
                 case MotionEvent.ACTION_MOVE:
-                    if (manualGestureActive && manualGapListener != null) {
+                    if (manualGestureActive && manualGapListener != null)
                         manualGapListener.onManualChange(openingFromTouch(event.getY()));
-                    }
                     return true;
-
                 case MotionEvent.ACTION_UP:
                     if (manualGestureActive && manualGapListener != null) {
                         manualGapListener.onManualChange(openingFromTouch(event.getY()));
@@ -876,15 +791,12 @@ public final class MainActivity extends Activity implements LocationListener {
                     getParent().requestDisallowInterceptTouchEvent(false);
                     performClick();
                     return true;
-
                 case MotionEvent.ACTION_CANCEL:
-                    if (manualGestureActive && manualGapListener != null) {
+                    if (manualGestureActive && manualGapListener != null)
                         manualGapListener.onManualEnd();
-                    }
                     manualGestureActive = false;
                     getParent().requestDisallowInterceptTouchEvent(false);
                     return true;
-
                 default:
                     return super.onTouchEvent(event);
             }
@@ -908,34 +820,24 @@ public final class MainActivity extends Activity implements LocationListener {
             float width = getWidth();
             float height = getHeight();
             float margin = 20.0f;
-
             RectF frame = new RectF(margin, margin, width - margin, height - margin);
             paint.setColor(Color.rgb(34, 45, 57));
             canvas.drawRoundRect(frame, 24.0f, 24.0f, paint);
-
-            RectF inside = new RectF(
-                    frame.left + 12.0f,
-                    frame.top + 12.0f,
-                    frame.right - 12.0f,
-                    frame.bottom - 12.0f);
+            RectF inside = new RectF(frame.left + 12.0f, frame.top + 12.0f,
+                    frame.right - 12.0f, frame.bottom - 12.0f);
             paint.setColor(Color.rgb(220, 232, 240));
             canvas.drawRoundRect(inside, 16.0f, 16.0f, paint);
-
             float openPixels = (float) (gapMm / MAX_GAP_MM * inside.height());
             float glassTop = inside.top + openPixels;
             if (glassTop < inside.bottom) {
                 paint.setColor(Color.rgb(105, 174, 208));
                 canvas.drawRect(inside.left, glassTop, inside.right, inside.bottom, paint);
             }
-
             paint.setColor(Color.rgb(20, 38, 58));
             paint.setTextSize(30.0f);
             paint.setTextAlign(Paint.Align.CENTER);
-            canvas.drawText(
-                    formatMillimeters(gapMm) + " mm",
-                    width / 2.0f,
-                    inside.top + Math.max(45.0f, openPixels / 2.0f),
-                    paint);
+            canvas.drawText(formatMillimeters(gapMm) + " mm", width / 2.0f,
+                    inside.top + Math.max(45.0f, openPixels / 2.0f), paint);
         }
     }
 }
