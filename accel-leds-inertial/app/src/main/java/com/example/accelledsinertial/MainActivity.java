@@ -401,24 +401,24 @@ public final class MainActivity extends Activity implements LocationListener {
         private void drawHeader(Canvas canvas, int width, int height) {
             paint.setStyle(Paint.Style.FILL);
             paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize(height * 0.044f);
+            paint.setTextSize(height * 0.039f);
             paint.setColor(Color.WHITE);
             canvas.drawText(
-                    "VELOCIDAD Y ACELERACIÓN GPS",
+                    "GPS · ACELERACIÓN DOMINANTE",
                     width * 0.035f,
-                    height * 0.085f,
+                    height * 0.078f,
                     paint);
 
-            float left = width * 0.755f;
-            float top = height * 0.025f;
+            float left = width * 0.765f;
+            float top = height * 0.020f;
             float right = width * 0.965f;
-            float bottom = height * 0.115f;
+            float bottom = height * 0.105f;
             rectangle.set(left, top, right, bottom);
             paint.setColor(Color.rgb(32, 32, 32));
             canvas.drawRoundRect(rectangle, height * 0.018f, height * 0.018f, paint);
 
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(height * 0.028f);
+            paint.setTextSize(height * 0.026f);
             paint.setColor(Color.WHITE);
             canvas.drawText(
                     showInfo ? "OCULTAR INFO" : "MOSTRAR INFO",
@@ -429,9 +429,9 @@ public final class MainActivity extends Activity implements LocationListener {
 
         private void drawSpeedPanel(Canvas canvas, int width, int height) {
             float left = width * 0.035f;
-            float right = width * 0.485f;
-            float top = height * 0.155f;
-            float bottom = height * 0.650f;
+            float right = width * 0.470f;
+            float top = height * 0.120f;
+            float bottom = height * 0.290f;
             drawPanelBackground(canvas, left, top, right, bottom);
 
             long ageMs =
@@ -440,70 +440,48 @@ public final class MainActivity extends Activity implements LocationListener {
                             : Math.max(0L, SystemClock.elapsedRealtime() - lastGpsMs);
             boolean fresh = lastGpsMs != 0L && ageMs <= GPS_SPEED_STALE_MS;
 
-            paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(height * 0.034f);
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.023f);
             paint.setColor(Color.rgb(170, 195, 220));
-            canvas.drawText("VELOCIDAD GPS", (left + right) / 2f, top + height * 0.060f, paint);
+            canvas.drawText("VELOCIDAD GPS", left + width * 0.018f, top + height * 0.038f, paint);
 
             String speedText =
                     fresh
                             ? String.format(Locale.US, "%.4f", gpsSpeed * 3.6f)
                             : "---";
-            paint.setTextSize(height * 0.145f);
-            fitText(speedText, (right - left) * 0.88f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.075f);
+            fitText(speedText, (right - left) * 0.70f);
             paint.setColor(fresh ? Color.WHITE : Color.rgb(115, 115, 115));
-            canvas.drawText(speedText, (left + right) / 2f, top + height * 0.230f, paint);
-
-            paint.setTextSize(height * 0.038f);
-            paint.setColor(Color.rgb(195, 210, 225));
-            canvas.drawText("km/h", (left + right) / 2f, top + height * 0.285f, paint);
-
-            String quality;
-            int qualityColor;
-            if (!fresh) {
-                quality = gnssStarted ? "BUSCANDO FIJACIÓN" : "GPS INACTIVO";
-                qualityColor = Color.rgb(255, 190, 70);
-            } else if (Float.isNaN(gpsSpeedAccuracy)) {
-                quality = "SIN INCERTIDUMBRE REPORTADA";
-                qualityColor = Color.rgb(255, 210, 80);
-            } else if (gpsSpeedAccuracy <= 0.35f) {
-                quality = "PRECISIÓN ALTA";
-                qualityColor = Color.rgb(80, 255, 130);
-            } else if (gpsSpeedAccuracy <= 0.80f) {
-                quality = "PRECISIÓN MEDIA";
-                qualityColor = Color.rgb(255, 215, 80);
-            } else {
-                quality = "PRECISIÓN BAJA";
-                qualityColor = Color.rgb(255, 110, 90);
-            }
+            canvas.drawText(speedText, (left + right) / 2f, top + height * 0.112f, paint);
 
             paint.setTextSize(height * 0.025f);
-            paint.setColor(qualityColor);
-            canvas.drawText(quality, (left + right) / 2f, top + height * 0.355f, paint);
+            paint.setColor(Color.rgb(195, 210, 225));
+            canvas.drawText("km/h", (left + right) / 2f, top + height * 0.148f, paint);
 
-            paint.setTextSize(height * 0.021f);
-            paint.setColor(Color.rgb(200, 210, 220));
-            String accuracyText =
-                    Float.isNaN(gpsSpeedAccuracy)
-                            ? "precisión de velocidad: n/d"
-                            : String.format(
-                                    Locale.US,
-                                    "±%.2f km/h (68%%)",
-                                    gpsSpeedAccuracy * 3.6f);
-            canvas.drawText(accuracyText, (left + right) / 2f, top + height * 0.405f, paint);
-
-            String ageText =
-                    lastGpsMs == 0L
-                            ? "sin lectura"
-                            : String.format(Locale.US, "edad %d ms", ageMs);
-            canvas.drawText(ageText, (left + right) / 2f, top + height * 0.450f, paint);
+            String footer;
+            if (!fresh) {
+                footer = gnssStarted ? "buscando fijación" : "GPS inactivo";
+            } else if (Float.isNaN(gpsSpeedAccuracy)) {
+                footer = String.format(Locale.US, "edad %d ms · precisión n/d", ageMs);
+            } else {
+                footer = String.format(
+                        Locale.US,
+                        "edad %d ms · ±%.2f km/h",
+                        ageMs,
+                        gpsSpeedAccuracy * 3.6f);
+            }
+            paint.setTextSize(height * 0.018f);
+            paint.setColor(fresh ? Color.rgb(190, 205, 220) : Color.rgb(255, 190, 70));
+            canvas.drawText(footer, (left + right) / 2f, bottom - height * 0.014f, paint);
         }
 
         private void drawAccelerationPanel(Canvas canvas, int width, int height) {
-            float left = width * 0.515f;
+            float left = width * 0.035f;
             float right = width * 0.965f;
-            float top = height * 0.155f;
-            float bottom = height * 0.650f;
+            float top = height * 0.315f;
+            float bottom = showInfo ? height * 0.735f : height * 0.900f;
+            float panelHeight = bottom - top;
             drawPanelBackground(canvas, left, top, right, bottom);
 
             long ageMs =
@@ -518,36 +496,41 @@ public final class MainActivity extends Activity implements LocationListener {
                             && lastGpsAccelerationMs != 0L
                             && ageMs <= GPS_ACCELERATION_STALE_MS;
 
-            paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(height * 0.034f);
-            paint.setColor(Color.rgb(170, 195, 220));
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.030f);
+            paint.setColor(Color.rgb(185, 205, 225));
             canvas.drawText(
                     "ACELERACIÓN GPS",
-                    (left + right) / 2f,
-                    top + height * 0.060f,
+                    left + width * 0.020f,
+                    top + panelHeight * 0.105f,
                     paint);
 
             String accelerationText =
                     fresh
                             ? String.format(Locale.US, "%+.4f", gpsAccelerationFiltered)
                             : "---";
-            paint.setTextSize(height * 0.120f);
-            fitText(accelerationText, (right - left) * 0.88f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.105f);
+            fitText(accelerationText, (right - left) * 0.50f);
             paint.setColor(fresh ? Color.WHITE : Color.rgb(115, 115, 115));
             canvas.drawText(
                     accelerationText,
                     (left + right) / 2f,
-                    top + height * 0.205f,
+                    top + panelHeight * 0.305f,
                     paint);
 
-            paint.setTextSize(height * 0.034f);
+            paint.setTextSize(height * 0.030f);
             paint.setColor(Color.rgb(195, 210, 225));
-            canvas.drawText("m/s²", (left + right) / 2f, top + height * 0.255f, paint);
+            canvas.drawText(
+                    "m/s²",
+                    (left + right) / 2f,
+                    top + panelHeight * 0.395f,
+                    paint);
 
-            float barLeft = left + (right - left) * 0.07f;
-            float barRight = right - (right - left) * 0.07f;
-            float barTop = top + height * 0.310f;
-            float barBottom = top + height * 0.390f;
+            float barLeft = left + (right - left) * 0.025f;
+            float barRight = right - (right - left) * 0.025f;
+            float barTop = top + panelHeight * 0.475f;
+            float barBottom = top + panelHeight * 0.805f;
             drawAccelerationBar(
                     canvas,
                     barLeft,
@@ -556,22 +539,28 @@ public final class MainActivity extends Activity implements LocationListener {
                     barBottom,
                     fresh ? gpsAccelerationFiltered : 0f);
 
-            paint.setTextSize(height * 0.020f);
-            paint.setColor(Color.rgb(195, 205, 215));
-            canvas.drawText(
-                    "verde +3.0 · rojo −9.0 · zona ±0.015",
-                    (left + right) / 2f,
-                    top + height * 0.435f,
-                    paint);
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.019f);
+            paint.setColor(Color.rgb(170, 255, 195));
+            canvas.drawText("+3.0 m/s²", barLeft, top + panelHeight * 0.885f, paint);
+
+            paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setColor(Color.rgb(255, 175, 170));
+            canvas.drawText("−9.0 m/s²", barRight, top + panelHeight * 0.885f, paint);
 
             String status = fresh ? accelerationQualityText() : "SIN ESTIMACIÓN VÁLIDA";
-            paint.setTextSize(height * 0.024f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.022f);
             paint.setColor(fresh ? accelerationQualityColor() : Color.rgb(255, 190, 70));
-            canvas.drawText(status, (left + right) / 2f, top + height * 0.475f, paint);
+            canvas.drawText(
+                    status + " · zona neutra ±0.015",
+                    (left + right) / 2f,
+                    top + panelHeight * 0.955f,
+                    paint);
         }
 
         private void drawDiagnostics(Canvas canvas, int width, int height) {
-            float top = height * 0.690f;
+            float top = height * 0.785f;
             paint.setTextAlign(Paint.Align.LEFT);
             paint.setTextSize(height * 0.021f);
             paint.setColor(Color.rgb(205, 210, 215));
@@ -647,7 +636,7 @@ public final class MainActivity extends Activity implements LocationListener {
             float y = top;
             for (String line : lines) {
                 canvas.drawText(line, width * 0.040f, y, paint);
-                y += height * 0.047f;
+                y += height * 0.040f;
             }
         }
 
