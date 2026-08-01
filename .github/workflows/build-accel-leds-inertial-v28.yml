@@ -1,0 +1,135 @@
+name: Build Accel LEDs Inercial v2.8 Zona Neutra
+
+on:
+  push:
+    branches:
+      - agent/build-inertial-apk
+    paths:
+      - .github/workflows/build-accel-leds-inertial-v28.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: accel-leds-inertial
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Apply visual dead zone
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('app/src/main/java/com/example/accelledsinertial/MainActivity.java')
+          source = source_path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  """    private static final float GREEN_FULL_SCALE = 3.0f;
+              private static final float RED_FULL_SCALE = 9.0f;
+
+              private static final int HISTORY_SIZE = 50;""".replace('              ', ''),
+                  """    private static final float GREEN_FULL_SCALE = 3.0f;
+              private static final float RED_FULL_SCALE = 9.0f;
+
+              // La medición numérica se conserva, pero la barra no muestra ruido cerca de cero.
+              private static final float VISUAL_DEAD_ZONE = 0.015f;
+
+              private static final int HISTORY_SIZE = 50;""".replace('              ', '')
+              ),
+              (
+                  """    private static float signedAverageFillFraction(float value) {
+              float magnitude = Math.abs(value);
+              if (magnitude <= 0f) return 0f;
+
+              float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
+              float normalized =
+                      (float)
+                              (Math.log1p(magnitude / 0.15f)
+                                      / Math.log1p(maximum / 0.15f));
+
+              return clamp(normalized, 0f, 1f);
+          }""".replace('              ', ''),
+                  """    private static float signedAverageFillFraction(float value) {
+              float magnitude = Math.abs(value);
+              if (magnitude <= VISUAL_DEAD_ZONE) return 0f;
+
+              float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
+              float visibleMagnitude = magnitude - VISUAL_DEAD_ZONE;
+              float visibleMaximum = maximum - VISUAL_DEAD_ZONE;
+              float normalized =
+                      (float)
+                              (Math.log1p(visibleMagnitude / 0.15f)
+                                      / Math.log1p(visibleMaximum / 0.15f));
+
+              return clamp(normalized, 0f, 1f);
+          }""".replace('              ', '')
+              ),
+              (
+                  '                    "PROMEDIOS — VERDE +3.0 / ROJO −9.0 m/s²",',
+                  '                    "PROMEDIOS — VERDE +3.0 / ROJO −9.0 · ZONA ±0.015 m/s²",'
+              ),
+              (
+                  """                boolean positive = value > 0f;
+              boolean negative = value < 0f;""".replace('              ', ''),
+                  """                boolean positive = value > VISUAL_DEAD_ZONE;
+              boolean negative = value < -VISUAL_DEAD_ZONE;""".replace('              ', '')
+              ),
+              (
+                  '                        "Cada fila: positivo verde / negativo rojo",',
+                  """                        String.format(
+                          Locale.US,
+                          "Zona neutra visual ±%.3f m/s²; el número no se altera",
+                          VISUAL_DEAD_ZONE),""".replace('                          ', '')
+              ),
+              (
+                  '        message = "Calibrado. Promedios 2/5/10/20/50 activos";',
+                  '        message = "Calibrado. Zona neutra visual ±0.015 activa";'
+              ),
+          ]
+
+          for old, new in replacements:
+              if old not in source:
+                  raise SystemExit(f'No se encontró el bloque esperado:\n{old[:160]}')
+              source = source.replace(old, new, 1)
+
+          source_path.write_text(source, encoding='utf-8')
+
+          gradle_path = Path('app/build.gradle')
+          gradle = gradle_path.read_text(encoding='utf-8')
+          gradle = gradle.replace(
+              "applicationId 'com.example.accelledsinertial.continuous.signedaverages50'",
+              "applicationId 'com.example.accelledsinertial.continuous.signedaverages50.deadzone'"
+          )
+          gradle = gradle.replace(
+              "versionName '2.7-promedios-con-signo-50'",
+              "versionName '2.8-zona-neutra-visual'"
+          )
+          gradle_path.write_text(gradle, encoding='utf-8')
+          PY
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AccelLEDsInertial-v2.8-zona-neutra
+          path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
