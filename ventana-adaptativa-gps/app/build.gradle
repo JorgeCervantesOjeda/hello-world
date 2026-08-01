@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.jorge.ventanaadaptativa.github.v250'
+        applicationId 'com.jorge.ventanaadaptativa.github.v251'
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName '2.5.0-github'
+        versionCode 4
+        versionName '2.5.1-github'
     }
 
     compileOptions {
