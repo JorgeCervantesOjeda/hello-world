@@ -7,13 +7,13 @@ java = JAVA_PATH.read_text(encoding="utf-8")
 
 replacements = [
     (
-        '                            ? String.format(Locale.US, "%.1f", gpsSpeed * 3.6f)',
-        '                            ? String.format(Locale.US, "%.4f", gpsSpeed * 3.6f)',
+        'String.format(Locale.US, "%.1f", gpsSpeed * 3.6f)',
+        'String.format(Locale.US, "%.4f", gpsSpeed * 3.6f)',
         "formato principal del velocímetro",
     ),
     (
-        '                                "GPS %.1f km/h · edad %s",',
-        '                                "GPS %.4f km/h · edad %s",',
+        '"GPS %.1f km/h · edad %s"',
+        '"GPS %.4f km/h · edad %s"',
         "formato GPS del diagnóstico",
     ),
     (
