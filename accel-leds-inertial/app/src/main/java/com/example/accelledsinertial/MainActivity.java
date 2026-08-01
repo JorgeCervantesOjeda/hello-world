@@ -24,6 +24,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 
+import java.util.Arrays;
 import java.util.Locale;
 
 public final class MainActivity extends Activity implements SensorEventListener, LocationListener {
@@ -38,10 +39,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private static final float REQUIRED_PERSISTENCE_S = 0.28f;
     private static final float RELEASE_HOLD_S = 0.12f;
 
-    // Escala aproximada para un Kia K3 1.6:
-    // aceleración máxima sostenida cercana a +3 m/s² y frenado fuerte hasta -9 m/s².
     private static final float GREEN_FULL_SCALE = 3.0f;
     private static final float RED_FULL_SCALE = 9.0f;
+    private static final int HISTORY_SIZE = 20;
 
     private SensorManager sensorManager;
     private Sensor motionSensor;
@@ -55,6 +55,15 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private final float[] filteredStage1 = new float[3];
     private final float[] filteredStage2 = new float[3];
     private final float[] axis = new float[]{1f, 0f, 0f};
+
+    // Historial de la aceleración longitudinal filtrada, antes de la compuerta antivibración.
+    private final float[] accelerationHistory = new float[HISTORY_SIZE];
+    private int historyNext;
+    private int historyCount;
+    private float average2;
+    private float average5;
+    private float average10;
+    private float average20;
 
     private float zeroBias;
     private long lastSensorNs;
@@ -201,12 +210,47 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
         if (calibrated && calibrationState == 0) {
             rawLongitudinal = dot(filteredStage2, axis) - zeroBias;
+            addAccelerationMeasurement(rawLongitudinal);
             updatePersistenceGate(rawLongitudinal, dt);
         } else {
             rawLongitudinal = 0f;
             resetMotionGate();
         }
         view.invalidate();
+    }
+
+    private void addAccelerationMeasurement(float value) {
+        accelerationHistory[historyNext] = value;
+        historyNext = (historyNext + 1) % HISTORY_SIZE;
+        if (historyCount < HISTORY_SIZE) historyCount++;
+
+        average2 = averageRecent(2);
+        average5 = averageRecent(5);
+        average10 = averageRecent(10);
+        average20 = averageRecent(20);
+    }
+
+    private float averageRecent(int requestedCount) {
+        int count = Math.min(requestedCount, historyCount);
+        if (count == 0) return 0f;
+
+        float sum = 0f;
+        for (int i = 0; i < count; i++) {
+            int index = historyNext - 1 - i;
+            if (index < 0) index += HISTORY_SIZE;
+            sum += accelerationHistory[index];
+        }
+        return sum / count;
+    }
+
+    private void clearAccelerationHistory() {
+        Arrays.fill(accelerationHistory, 0f);
+        historyNext = 0;
+        historyCount = 0;
+        average2 = 0f;
+        average5 = 0f;
+        average10 = 0f;
+        average20 = 0f;
     }
 
     private void updatePersistenceGate(float value, float dt) {
@@ -275,6 +319,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
         calibrationSamples = 0;
         zeroSamples = 0;
         resetMotionGate();
+        clearAccelerationHistory();
 
         for (int i = 0; i < 3; i++) {
             calibrationMean[i] = 0;
@@ -361,7 +406,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 .putFloat("bias", zeroBias)
                 .apply();
         resetMotionGate();
-        message = "Calibrado. Escala K3 activa";
+        clearAccelerationHistory();
+        message = "Calibrado. Promedios 2/5/10/20 activos";
     }
 
     private void setZero() {
@@ -369,7 +415,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
         zeroBias = dot(filteredStage2, axis);
         prefs.edit().putFloat("bias", zeroBias).apply();
         resetMotionGate();
-        message = "Cero ajustado";
+        clearAccelerationHistory();
+        message = "Cero ajustado; historial reiniciado";
     }
 
     @Override
@@ -452,12 +499,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
             int right = width - side;
             int availablePixels = Math.max(1, right - left);
 
-            float redFraction = fillFraction(
-                    Math.max(0f, -longitudinal),
-                    RED_FULL_SCALE);
-            float greenFraction = fillFraction(
-                    Math.max(0f, longitudinal),
-                    GREEN_FULL_SCALE);
+            float redFraction = fillFraction(Math.max(0f, -longitudinal), RED_FULL_SCALE);
+            float greenFraction = fillFraction(Math.max(0f, longitudinal), GREEN_FULL_SCALE);
             int redPixels = Math.round(availablePixels * redFraction);
             int greenPixels = Math.round(availablePixels * greenFraction);
 
@@ -467,26 +510,11 @@ public final class MainActivity extends Activity implements SensorEventListener,
             int greenBottom = Math.round(height * 0.63f);
 
             drawContinuousBar(
-                    canvas,
-                    left,
-                    right,
-                    redTop,
-                    redBottom,
-                    redPixels,
-                    true,
-                    Color.rgb(255, 35, 25),
-                    Color.rgb(35, 5, 5));
-
+                    canvas, left, right, redTop, redBottom, redPixels, true,
+                    Color.rgb(255, 35, 25), Color.rgb(35, 5, 5));
             drawContinuousBar(
-                    canvas,
-                    left,
-                    right,
-                    greenTop,
-                    greenBottom,
-                    greenPixels,
-                    false,
-                    Color.rgb(0, 255, 70),
-                    Color.rgb(4, 32, 12));
+                    canvas, left, right, greenTop, greenBottom, greenPixels, false,
+                    Color.rgb(0, 255, 70), Color.rgb(4, 32, 12));
 
             drawButton(canvas, 0, "CALIBRAR");
             drawButton(canvas, 1, showInfo ? "OCULTAR INFO" : "MOSTRAR INFO");
@@ -498,16 +526,16 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
             paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(height * 0.033f);
+            paint.setTextSize(height * 0.031f);
             paint.setColor(Color.LTGRAY);
-            canvas.drawText(message, width / 2f, height * 0.91f, paint);
+            canvas.drawText(message, width / 2f, height * 0.925f, paint);
 
-            paint.setTextSize(height * 0.024f);
+            paint.setTextSize(height * 0.022f);
             paint.setColor(Color.GRAY);
             canvas.drawText(
                     "Uso experimental · teléfono fijado · no manipular al conducir",
                     width / 2f,
-                    height * 0.98f,
+                    height * 0.982f,
                     paint);
         }
 
@@ -577,8 +605,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 int availablePixels) {
             paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize(height * 0.026f);
-            paint.setColor(Color.rgb(190, 190, 190));
+            paint.setTextSize(height * 0.0195f);
+            paint.setColor(Color.rgb(205, 205, 205));
 
             String gpsAge = lastGpsMs == 0
                     ? "sin datos"
@@ -589,35 +617,22 @@ public final class MainActivity extends Activity implements SensorEventListener,
                     1f) * 100f;
 
             String[] lines = new String[]{
-                    String.format(Locale.US, "Salida: %+.4f m/s²", longitudinal),
-                    String.format(
-                            Locale.US,
-                            "Filtrada: %+.4f m/s² · confianza %.0f%%",
-                            rawLongitudinal,
-                            confidence),
-                    String.format(
-                            Locale.US,
-                            "Píxeles: rojo %d · verde %d · ancho %d",
-                            redPixels,
-                            greenPixels,
-                            availablePixels),
-                    String.format(
-                            Locale.US,
-                            "Escala completa: rojo −%.1f · verde +%.1f m/s²",
-                            RED_FULL_SCALE,
-                            GREEN_FULL_SCALE),
-                    String.format(
-                            Locale.US,
-                            "GPS: %.1f km/h · edad %s",
-                            gpsSpeed * 3.6f,
-                            gpsAge),
+                    String.format(Locale.US, "Medición filtrada: %+.5f m/s²", rawLongitudinal),
+                    String.format(Locale.US, "Promedio últimas 2:  %+.5f m/s²", average2),
+                    String.format(Locale.US, "Promedio últimas 5:  %+.5f m/s²", average5),
+                    String.format(Locale.US, "Promedio últimas 10: %+.5f m/s²", average10),
+                    String.format(Locale.US, "Promedio últimas 20: %+.5f m/s²", average20),
+                    String.format(Locale.US, "Salida LED: %+.5f m/s² · confianza %.0f%%", longitudinal, confidence),
+                    String.format(Locale.US, "Píxeles: rojo %d · verde %d · ancho %d", redPixels, greenPixels, availablePixels),
+                    String.format(Locale.US, "Escala: rojo −%.1f · verde +%.1f m/s²", RED_FULL_SCALE, GREEN_FULL_SCALE),
+                    String.format(Locale.US, "GPS: %.1f km/h · edad %s", gpsSpeed * 3.6f, gpsAge),
                     "Filtro: dos etapas + persistencia 0.28 s",
-                    "Estado: " + (calibrated ? "calibrado" : "sin calibrar")};
+                    String.format(Locale.US, "Estado: %s · historial %d/20", calibrated ? "calibrado" : "sin calibrar", historyCount)};
 
-            float y = height * 0.655f;
+            float y = height * 0.652f;
             for (String line : lines) {
                 canvas.drawText(line, width * 0.035f, y, paint);
-                y += height * 0.031f;
+                y += height * 0.0225f;
             }
         }
 
