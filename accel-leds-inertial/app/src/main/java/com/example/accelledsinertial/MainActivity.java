@@ -13,11 +13,14 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
@@ -44,6 +47,8 @@ public final class MainActivity extends Activity
     // Las escalas siguen siendo diferentes según el signo.
     private static final float GREEN_FULL_SCALE = 3.0f;
     private static final float RED_FULL_SCALE = 9.0f;
+    private static final float VISUAL_DEAD_ZONE = 0.015f;
+    private static final long GPS_STALE_MS = 2500L;
 
     private static final int HISTORY_SIZE = 50;
     private static final int[] AVERAGE_WINDOWS = new int[]{2, 5, 10, 20, 50};
@@ -71,7 +76,13 @@ public final class MainActivity extends Activity
     private float rawLongitudinal;
     private float longitudinal;
     private float gpsSpeed;
+    private float gpsSpeedAccuracy = Float.NaN;
+    private float gpsHorizontalAccuracy = Float.NaN;
     private long lastGpsMs;
+    private int gnssSatellitesVisible;
+    private int gnssSatellitesUsed;
+    private boolean gnssStarted;
+    private boolean gnssCallbackRegistered;
     private boolean showInfo = true;
     private boolean calibrated;
 
@@ -88,6 +99,35 @@ public final class MainActivity extends Activity
     private final double[] calibrationMean = new double[3];
     private final double[] zeroMean = new double[3];
     private String message = "Fija el teléfono y pulsa CALIBRAR";
+
+    private final GnssStatus.Callback gnssStatusCallback =
+            new GnssStatus.Callback() {
+                @Override
+                public void onStarted() {
+                    gnssStarted = true;
+                    if (view != null) view.invalidate();
+                }
+
+                @Override
+                public void onStopped() {
+                    gnssStarted = false;
+                    gnssSatellitesVisible = 0;
+                    gnssSatellitesUsed = 0;
+                    if (view != null) view.invalidate();
+                }
+
+                @Override
+                public void onSatelliteStatusChanged(GnssStatus status) {
+                    gnssStarted = true;
+                    gnssSatellitesVisible = status.getSatelliteCount();
+                    int used = 0;
+                    for (int i = 0; i < gnssSatellitesVisible; i++) {
+                        if (status.usedInFix(i)) used++;
+                    }
+                    gnssSatellitesUsed = used;
+                    if (view != null) view.invalidate();
+                }
+            };
 
     @Override
     protected void onCreate(Bundle state) {
@@ -165,14 +205,30 @@ public final class MainActivity extends Activity
 
         try {
             locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, 0L, 0f, this);
+                    LocationManager.GPS_PROVIDER,
+                    0L,
+                    0f,
+                    this,
+                    Looper.getMainLooper());
+            if (!gnssCallbackRegistered) {
+                gnssCallbackRegistered =
+                        locationManager.registerGnssStatusCallback(
+                                gnssStatusCallback,
+                                new Handler(Looper.getMainLooper()));
+            }
         } catch (Exception ignored) {
         }
     }
 
     private void stopLocation() {
         try {
-            if (locationManager != null) locationManager.removeUpdates(this);
+            if (locationManager != null) {
+                locationManager.removeUpdates(this);
+                if (gnssCallbackRegistered) {
+                    locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
+                    gnssCallbackRegistered = false;
+                }
+            }
         } catch (Exception ignored) {
         }
     }
@@ -451,8 +507,14 @@ public final class MainActivity extends Activity
     public void onLocationChanged(Location location) {
         if (location != null && location.hasSpeed()) {
             gpsSpeed = Math.max(0f, location.getSpeed());
-            lastGpsMs = SystemClock.elapsedRealtime();
-            view.invalidate();
+            gpsSpeedAccuracy =
+                    location.hasSpeedAccuracy()
+                            ? location.getSpeedAccuracyMetersPerSecond()
+                            : Float.NaN;
+            gpsHorizontalAccuracy =
+                    location.hasAccuracy() ? location.getAccuracy() : Float.NaN;
+            lastGpsMs = location.getElapsedRealtimeNanos() / 1_000_000L;
+            if (view != null) view.invalidate();
         }
     }
 
@@ -500,13 +562,15 @@ public final class MainActivity extends Activity
 
     private static float signedAverageFillFraction(float value) {
         float magnitude = Math.abs(value);
-        if (magnitude <= 0f) return 0f;
+        if (magnitude <= VISUAL_DEAD_ZONE) return 0f;
 
         float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
+        float adjustedMagnitude = magnitude - VISUAL_DEAD_ZONE;
+        float adjustedMaximum = maximum - VISUAL_DEAD_ZONE;
         float normalized =
                 (float)
-                        (Math.log1p(magnitude / 0.15f)
-                                / Math.log1p(maximum / 0.15f));
+                        (Math.log1p(adjustedMagnitude / 0.15f)
+                                / Math.log1p(adjustedMaximum / 0.15f));
 
         return clamp(normalized, 0f, 1f);
     }
@@ -535,6 +599,7 @@ public final class MainActivity extends Activity
             drawButton(canvas, 2, "AJUSTAR CERO");
 
             drawAverageBars(canvas, width, height);
+            drawGpsSpeedometer(canvas, width, height);
 
             if (showInfo) {
                 drawInfo(canvas, width, height);
@@ -558,7 +623,7 @@ public final class MainActivity extends Activity
         private void drawAverageBars(Canvas canvas, int width, int height) {
             int labelRight = Math.round(width * 0.185f);
             int left = Math.round(width * 0.205f);
-            int right = width - Math.round(width * 0.035f);
+            int right = Math.round(width * 0.655f);
             int availablePixels = Math.max(1, right - left);
 
             float areaTop = height * 0.205f;
@@ -573,7 +638,7 @@ public final class MainActivity extends Activity
             paint.setTextSize(height * 0.022f);
             paint.setColor(Color.LTGRAY);
             canvas.drawText(
-                    "PROMEDIOS — VERDE +3.0 / ROJO −9.0 m/s²",
+                    "PROMEDIOS · zona neutra ±0.015 m/s²",
                     width * 0.02f,
                     height * 0.182f,
                     paint);
@@ -686,6 +751,136 @@ public final class MainActivity extends Activity
                     paint);
         }
 
+        private void drawGpsSpeedometer(Canvas canvas, int width, int height) {
+            float left = width * 0.680f;
+            float right = width * 0.975f;
+            float top = height * 0.205f;
+            float bottom = height * 0.675f;
+
+            paint.setAntiAlias(true);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(12, 16, 20));
+            rectangle.set(left, top, right, bottom);
+            canvas.drawRoundRect(rectangle, height * 0.025f, height * 0.025f, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, height * 0.003f));
+            paint.setColor(Color.rgb(90, 105, 120));
+            canvas.drawRoundRect(rectangle, height * 0.025f, height * 0.025f, paint);
+            paint.setStyle(Paint.Style.FILL);
+
+            long ageMs =
+                    lastGpsMs == 0L
+                            ? Long.MAX_VALUE
+                            : Math.max(0L, SystemClock.elapsedRealtime() - lastGpsMs);
+            boolean fresh = lastGpsMs != 0L && ageMs <= GPS_STALE_MS;
+
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.028f);
+            paint.setColor(Color.rgb(170, 190, 210));
+            canvas.drawText(
+                    "VELOCIDAD GPS",
+                    (left + right) / 2f,
+                    top + height * 0.050f,
+                    paint);
+
+            String speedText =
+                    fresh
+                            ? String.format(Locale.US, "%.1f", gpsSpeed * 3.6f)
+                            : "---";
+            paint.setTextSize(height * 0.125f);
+            paint.setColor(fresh ? Color.WHITE : Color.rgb(120, 120, 120));
+            canvas.drawText(
+                    speedText,
+                    (left + right) / 2f,
+                    top + height * 0.205f,
+                    paint);
+
+            paint.setTextSize(height * 0.032f);
+            paint.setColor(Color.rgb(190, 205, 220));
+            canvas.drawText(
+                    "km/h",
+                    (left + right) / 2f,
+                    top + height * 0.255f,
+                    paint);
+
+            String accuracyText =
+                    Float.isNaN(gpsSpeedAccuracy)
+                            ? "precisión de velocidad: n/d"
+                            : String.format(
+                                    Locale.US,
+                                    "±%.1f km/h (68%%)",
+                                    gpsSpeedAccuracy * 3.6f);
+
+            String quality;
+            int qualityColor;
+            if (!fresh) {
+                quality = gnssStarted ? "BUSCANDO FIJACIÓN" : "GPS INACTIVO";
+                qualityColor = Color.rgb(255, 190, 70);
+            } else if (Float.isNaN(gpsSpeedAccuracy)) {
+                quality = "FIJACIÓN SIN INCERTIDUMBRE";
+                qualityColor = Color.rgb(255, 210, 80);
+            } else if (gpsSpeedAccuracy <= 0.35f) {
+                quality = "PRECISIÓN ALTA";
+                qualityColor = Color.rgb(80, 255, 130);
+            } else if (gpsSpeedAccuracy <= 0.80f) {
+                quality = "PRECISIÓN MEDIA";
+                qualityColor = Color.rgb(255, 215, 80);
+            } else {
+                quality = "PRECISIÓN BAJA";
+                qualityColor = Color.rgb(255, 110, 90);
+            }
+
+            paint.setTextSize(height * 0.022f);
+            paint.setColor(qualityColor);
+            canvas.drawText(
+                    quality,
+                    (left + right) / 2f,
+                    top + height * 0.315f,
+                    paint);
+
+            paint.setTextSize(height * 0.019f);
+            paint.setColor(Color.rgb(195, 205, 215));
+            canvas.drawText(
+                    accuracyText,
+                    (left + right) / 2f,
+                    top + height * 0.355f,
+                    paint);
+
+            canvas.drawText(
+                    String.format(
+                            Locale.US,
+                            "satélites usados %d / visibles %d",
+                            gnssSatellitesUsed,
+                            gnssSatellitesVisible),
+                    (left + right) / 2f,
+                    top + height * 0.390f,
+                    paint);
+
+            String positionAccuracy =
+                    Float.isNaN(gpsHorizontalAccuracy)
+                            ? "precisión de posición: n/d"
+                            : String.format(
+                                    Locale.US,
+                                    "posición ±%.1f m",
+                                    gpsHorizontalAccuracy);
+            canvas.drawText(
+                    positionAccuracy,
+                    (left + right) / 2f,
+                    top + height * 0.425f,
+                    paint);
+
+            String ageText =
+                    lastGpsMs == 0L
+                            ? "sin lectura de velocidad"
+                            : String.format(Locale.US, "edad %d ms", ageMs);
+            canvas.drawText(
+                    ageText,
+                    (left + right) / 2f,
+                    top + height * 0.460f,
+                    paint);
+        }
+
         private void drawButton(Canvas canvas, int index, String label) {
             paint.setAntiAlias(true);
 
@@ -745,7 +940,7 @@ public final class MainActivity extends Activity
                                 "Confianza %.0f%% · historial %d/50",
                                 confidence,
                                 historyCount),
-                        "Cada fila: positivo verde / negativo rojo",
+                        "GPS directo con precisión, edad y satélites",
                         String.format(
                                 Locale.US,
                                 "GPS %.1f km/h · edad %s",
