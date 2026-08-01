@@ -26,7 +26,6 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 
-import java.math.BigDecimal;
 import java.util.Locale;
 
 public final class MainActivity extends Activity implements LocationListener {
@@ -156,7 +155,7 @@ public final class MainActivity extends Activity implements LocationListener {
         sourceText = text("Fuente: GPS; velocidad inicial 0.0 km/h", 14, Color.DKGRAY);
         root.addView(sourceText);
 
-        speedText = text("0 km/h", 22, Color.rgb(17, 87, 138));
+        speedText = text("0.0000000 km/h", 22, Color.rgb(17, 87, 138));
         speedText.setGravity(Gravity.CENTER);
         root.addView(speedText);
 
@@ -717,7 +716,7 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private static String formatSpeedKmh(double value) {
         if (!Double.isFinite(value)) return "no finita";
-        return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();
+        return String.format(Locale.getDefault(), "%.7f", value);
     }
 
     private static String formatMillimeters(double value) {

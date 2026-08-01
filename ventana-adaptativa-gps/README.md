@@ -104,3 +104,7 @@ No manipules la aplicación mientras conduces.
 El velocímetro principal muestra la representación decimal completa necesaria para reconstruir exactamente el valor `double` almacenado en km/h. No se limita a una cifra decimal y la presentación no modifica el valor usado por el controlador. La velocidad GPS continúa originándose en `Location.getSpeed()` y se convierte explícitamente de m/s a km/h usando aritmética `double`.
 
 La cantidad de dígitos visibles puede variar entre lecturas: se eliminan únicamente ceros decimales redundantes, no información numérica almacenada.
+
+## Velocímetro con siete decimales fijos — 2.5.3
+
+El velocímetro principal muestra siempre exactamente siete cifras después del separador decimal. Por ejemplo: `0.0000000 km/h`, `83.4000000 km/h` y `83.4720001 km/h`. El redondeo a siete decimales afecta únicamente a la presentación; el controlador continúa usando el valor `double` completo almacenado.
