@@ -102,3 +102,5 @@ No manipules la aplicación mientras conduces.
 ## Velocímetro sin redondeo — 2.5.2
 
 El velocímetro principal muestra la representación decimal completa necesaria para reconstruir exactamente el valor `double` almacenado en km/h. No se limita a una cifra decimal y la presentación no modifica el valor usado por el controlador. La velocidad GPS continúa originándose en `Location.getSpeed()` y se convierte explícitamente de m/s a km/h usando aritmética `double`.
+
+La cantidad de dígitos visibles puede variar entre lecturas: se eliminan únicamente ceros decimales redundantes, no información numérica almacenada.
