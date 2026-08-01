@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'accel-leds-inertial/**'
+      - '.github/scripts/apply_v41_acceleration_dominant.py'
       - '.github/workflows/build-accel-leds-inertial.yml'
   pull_request:
     paths:
@@ -16,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: agent/build-inertial-apk
 
       - uses: actions/setup-java@v4
         with:
@@ -26,11 +29,17 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Apply dominant acceleration layout
+        run: python3 .github/scripts/apply_v41_acceleration_dominant.py
+
       - name: Build debug APK
         run: gradle -p accel-leds-inertial assembleDebug --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GPS-Velocidad-Aceleracion-v4.0
-          path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
+          name: GPS-Aceleracion-Dominante-v4.1-staging
+          path: |
+            accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
+            accel-leds-inertial/app/src/main/java/com/example/accelledsinertial/MainActivity.java
+            accel-leds-inertial/app/build.gradle
           if-no-files-found: error
