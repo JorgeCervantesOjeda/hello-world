@@ -41,11 +41,12 @@ public final class MainActivity extends Activity
     private static final float REQUIRED_PERSISTENCE_S = 0.28f;
     private static final float RELEASE_HOLD_S = 0.12f;
 
+    // Las escalas siguen siendo diferentes según el signo.
     private static final float GREEN_FULL_SCALE = 3.0f;
     private static final float RED_FULL_SCALE = 9.0f;
-    private static final int HISTORY_SIZE = 20;
 
-    private static final int[] AVERAGE_WINDOWS = new int[]{2, 5, 10, 20};
+    private static final int HISTORY_SIZE = 50;
+    private static final int[] AVERAGE_WINDOWS = new int[]{2, 5, 10, 20, 50};
 
     private SensorManager sensorManager;
     private Sensor motionSensor;
@@ -61,7 +62,7 @@ public final class MainActivity extends Activity
     private final float[] axis = new float[]{1f, 0f, 0f};
 
     private final float[] accelerationHistory = new float[HISTORY_SIZE];
-    private final float[] averages = new float[4];
+    private final float[] averages = new float[AVERAGE_WINDOWS.length];
     private int historyNext;
     private int historyCount;
 
@@ -429,7 +430,7 @@ public final class MainActivity extends Activity
 
         resetMotionGate();
         clearAccelerationHistory();
-        message = "Calibrado. Ocho barras de promedios activas";
+        message = "Calibrado. Promedios 2/5/10/20/50 activos";
     }
 
     private void setZero() {
@@ -497,12 +498,14 @@ public final class MainActivity extends Activity
         return Math.max(minimum, Math.min(maximum, value));
     }
 
-    private static float averageFillFraction(float acceleration, float maximum) {
-        if (acceleration <= 0f) return 0f;
+    private static float signedAverageFillFraction(float value) {
+        float magnitude = Math.abs(value);
+        if (magnitude <= 0f) return 0f;
 
+        float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
         float normalized =
                 (float)
-                        (Math.log1p(acceleration / 0.15f)
+                        (Math.log1p(magnitude / 0.15f)
                                 / Math.log1p(maximum / 0.15f));
 
         return clamp(normalized, 0f, 1f);
@@ -524,11 +527,6 @@ public final class MainActivity extends Activity
             int width = getWidth();
             int height = getHeight();
 
-            int labelWidth = Math.round(width * 0.155f);
-            int left = labelWidth + Math.round(width * 0.012f);
-            int right = width - Math.round(width * 0.035f);
-            int availablePixels = Math.max(1, right - left);
-
             drawButton(canvas, 0, "CALIBRAR");
             drawButton(
                     canvas,
@@ -536,27 +534,7 @@ public final class MainActivity extends Activity
                     showInfo ? "OCULTAR INFO" : "MOSTRAR INFO");
             drawButton(canvas, 2, "AJUSTAR CERO");
 
-            drawAverageGroup(
-                    canvas,
-                    width,
-                    height,
-                    left,
-                    right,
-                    availablePixels,
-                    true,
-                    height * 0.205f,
-                    height * 0.420f);
-
-            drawAverageGroup(
-                    canvas,
-                    width,
-                    height,
-                    left,
-                    right,
-                    availablePixels,
-                    false,
-                    height * 0.465f,
-                    height * 0.680f);
+            drawAverageBars(canvas, width, height);
 
             if (showInfo) {
                 drawInfo(canvas, width, height);
@@ -564,11 +542,11 @@ public final class MainActivity extends Activity
 
             paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(height * 0.028f);
+            paint.setTextSize(height * 0.027f);
             paint.setColor(Color.LTGRAY);
             canvas.drawText(message, width / 2f, height * 0.925f, paint);
 
-            paint.setTextSize(height * 0.021f);
+            paint.setTextSize(height * 0.020f);
             paint.setColor(Color.GRAY);
             canvas.drawText(
                     "Uso experimental · teléfono fijado · no manipular al conducir",
@@ -577,114 +555,67 @@ public final class MainActivity extends Activity
                     paint);
         }
 
-        private void drawAverageGroup(
-                Canvas canvas,
-                int screenWidth,
-                int screenHeight,
-                int left,
-                int right,
-                int availablePixels,
-                boolean redGroup,
-                float groupTop,
-                float groupBottom) {
+        private void drawAverageBars(Canvas canvas, int width, int height) {
+            int labelRight = Math.round(width * 0.185f);
+            int left = Math.round(width * 0.205f);
+            int right = width - Math.round(width * 0.035f);
+            int availablePixels = Math.max(1, right - left);
+
+            float areaTop = height * 0.205f;
+            float areaBottom = height * 0.675f;
+            float rowGap = height * 0.012f;
+            float rowHeight =
+                    (areaBottom - areaTop - rowGap * (AVERAGE_WINDOWS.length - 1))
+                            / AVERAGE_WINDOWS.length;
 
             paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize(screenHeight * 0.023f);
-            paint.setColor(
-                    redGroup
-                            ? Color.rgb(255, 120, 115)
-                            : Color.rgb(100, 255, 145));
-
+            paint.setTextSize(height * 0.022f);
+            paint.setColor(Color.LTGRAY);
             canvas.drawText(
-                    redGroup ? "FRENADO — PROMEDIOS" : "ACELERACIÓN — PROMEDIOS",
-                    screenWidth * 0.018f,
-                    groupTop - screenHeight * 0.012f,
+                    "PROMEDIOS — VERDE +3.0 / ROJO −9.0 m/s²",
+                    width * 0.02f,
+                    height * 0.182f,
                     paint);
 
-            float groupHeight = groupBottom - groupTop;
-            float rowGap = screenHeight * 0.008f;
-            float rowHeight = (groupHeight - 3f * rowGap) / 4f;
-
             for (int i = 0; i < AVERAGE_WINDOWS.length; i++) {
-                int top = Math.round(groupTop + i * (rowHeight + rowGap));
+                int top = Math.round(areaTop + i * (rowHeight + rowGap));
                 int bottom = Math.round(top + rowHeight);
-
                 float value = averages[i];
-                float magnitude = redGroup
-                        ? Math.max(0f, -value)
-                        : Math.max(0f, value);
-                float fullScale = redGroup ? RED_FULL_SCALE : GREEN_FULL_SCALE;
+                boolean positive = value > 0f;
+                boolean negative = value < 0f;
                 int pixels = Math.round(
-                        availablePixels
-                                * averageFillFraction(magnitude, fullScale));
+                        availablePixels * signedAverageFillFraction(value));
 
-                drawContinuousBar(
+                int activeColor = positive
+                        ? Color.rgb(0, 255, 70)
+                        : negative
+                                ? Color.rgb(255, 35, 25)
+                                : Color.rgb(70, 70, 70);
+
+                drawSignedBar(
                         canvas,
                         left,
                         right,
                         top,
                         bottom,
                         pixels,
-                        redGroup,
-                        redGroup
-                                ? Color.rgb(255, 35, 25)
-                                : Color.rgb(0, 255, 70),
-                        redGroup
-                                ? Color.rgb(35, 5, 5)
-                                : Color.rgb(4, 32, 12));
+                        negative,
+                        activeColor);
 
-                drawWindowLabel(
+                drawAverageLabel(
                         canvas,
-                        screenWidth,
+                        labelRight,
                         top,
                         bottom,
                         AVERAGE_WINDOWS[i],
                         value,
-                        redGroup);
+                        positive,
+                        negative);
             }
         }
 
-        private void drawWindowLabel(
-                Canvas canvas,
-                int screenWidth,
-                int top,
-                int bottom,
-                int window,
-                float value,
-                boolean redGroup) {
-
-            paint.setAntiAlias(true);
-            paint.setTextAlign(Paint.Align.RIGHT);
-            paint.setTextSize((bottom - top) * 0.47f);
-            paint.setColor(Color.WHITE);
-
-            float centerY =
-                    (top + bottom) / 2f
-                            - (paint.ascent() + paint.descent()) / 2f;
-
-            canvas.drawText(
-                    Integer.toString(window),
-                    screenWidth * 0.055f,
-                    centerY,
-                    paint);
-
-            paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize((bottom - top) * 0.34f);
-            paint.setColor(
-                    redGroup
-                            ? Color.rgb(255, 175, 170)
-                            : Color.rgb(155, 255, 180));
-
-            String valueText = String.format(Locale.US, "%+.3f", value);
-            canvas.drawText(
-                    valueText,
-                    screenWidth * 0.078f,
-                    centerY,
-                    paint);
-        }
-
-        private void drawContinuousBar(
+        private void drawSignedBar(
                 Canvas canvas,
                 int left,
                 int right,
@@ -692,12 +623,11 @@ public final class MainActivity extends Activity
                 int bottom,
                 int activePixels,
                 boolean fromRight,
-                int activeColor,
-                int trackColor) {
+                int activeColor) {
 
             paint.setAntiAlias(false);
             paint.setAlpha(255);
-            paint.setColor(trackColor);
+            paint.setColor(Color.rgb(24, 24, 24));
             canvas.drawRect(left, top, right, bottom, paint);
 
             int pixels = Math.max(0, Math.min(right - left, activePixels));
@@ -711,9 +641,49 @@ public final class MainActivity extends Activity
 
             int edgeX = fromRight ? activeLeft : activeRight - 1;
             paint.setColor(Color.WHITE);
-            paint.setAlpha(150);
+            paint.setAlpha(155);
             canvas.drawRect(edgeX, top, edgeX + 1, bottom, paint);
             paint.setAlpha(255);
+        }
+
+        private void drawAverageLabel(
+                Canvas canvas,
+                int labelRight,
+                int top,
+                int bottom,
+                int window,
+                float value,
+                boolean positive,
+                boolean negative) {
+
+            float centerY = (top + bottom) / 2f;
+
+            paint.setAntiAlias(true);
+            paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setTextSize((bottom - top) * 0.38f);
+            paint.setColor(Color.WHITE);
+
+            float baseline = centerY - (paint.ascent() + paint.descent()) / 2f;
+            canvas.drawText(
+                    Integer.toString(window),
+                    labelRight * 0.32f,
+                    baseline,
+                    paint);
+
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize((bottom - top) * 0.30f);
+            paint.setColor(
+                    positive
+                            ? Color.rgb(155, 255, 180)
+                            : negative
+                                    ? Color.rgb(255, 175, 170)
+                                    : Color.LTGRAY);
+
+            canvas.drawText(
+                    String.format(Locale.US, "%+.4f", value),
+                    labelRight * 0.40f,
+                    baseline,
+                    paint);
         }
 
         private void drawButton(Canvas canvas, int index, String label) {
@@ -758,8 +728,7 @@ public final class MainActivity extends Activity
 
             float confidence =
                     clamp(
-                                    candidateTimeS
-                                            / REQUIRED_PERSISTENCE_S,
+                                    candidateTimeS / REQUIRED_PERSISTENCE_S,
                                     0f,
                                     1f)
                             * 100f;
@@ -773,14 +742,10 @@ public final class MainActivity extends Activity
                                 longitudinal),
                         String.format(
                                 Locale.US,
-                                "Confianza %.0f%% · historial %d/20",
+                                "Confianza %.0f%% · historial %d/50",
                                 confidence,
                                 historyCount),
-                        String.format(
-                                Locale.US,
-                                "Escala rojo −%.1f · verde +%.1f m/s²",
-                                RED_FULL_SCALE,
-                                GREEN_FULL_SCALE),
+                        "Cada fila: positivo verde / negativo rojo",
                         String.format(
                                 Locale.US,
                                 "GPS %.1f km/h · edad %s",
@@ -788,7 +753,7 @@ public final class MainActivity extends Activity
                                 gpsAge)
                     };
 
-            float y = height * 0.725f;
+            float y = height * 0.720f;
             for (String line : lines) {
                 canvas.drawText(line, width * 0.035f, y, paint);
                 y += height * 0.025f;
