@@ -26,6 +26,7 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 
+import java.math.BigDecimal;
 import java.util.Locale;
 
 public final class MainActivity extends Activity implements LocationListener {
@@ -155,7 +156,7 @@ public final class MainActivity extends Activity implements LocationListener {
         sourceText = text("Fuente: GPS; velocidad inicial 0.0 km/h", 14, Color.DKGRAY);
         root.addView(sourceText);
 
-        speedText = text("0.0 km/h", 30, Color.rgb(17, 87, 138));
+        speedText = text("0 km/h", 22, Color.rgb(17, 87, 138));
         speedText.setGravity(Gravity.CENTER);
         root.addView(speedText);
 
@@ -542,7 +543,7 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void refresh() {
-        speedText.setText(String.format(Locale.getDefault(), "%.1f km/h", speedKmh));
+        speedText.setText(formatSpeedKmh(speedKmh) + " km/h");
         gapText.setText(String.format(Locale.getDefault(),
                 "Apertura: %s mm", formatMillimeters(gapMm)));
         windowView.setGap(gapMm);
@@ -631,7 +632,7 @@ public final class MainActivity extends Activity implements LocationListener {
         }
         if (location.hasSpeed() && Float.isFinite(location.getSpeed())
                 && location.getSpeed() >= 0.0f) {
-            lastGpsSpeedKmh = location.getSpeed() * 3.6;
+            lastGpsSpeedKmh = ((double) location.getSpeed()) * 3.6d;
             speedKmh = lastGpsSpeedKmh;
             sourceText.setText("Fuente: GPS");
         } else {
@@ -712,6 +713,11 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private static double clamp(double value, double minimum, double maximum) {
         return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static String formatSpeedKmh(double value) {
+        if (!Double.isFinite(value)) return "no finita";
+        return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();
     }
 
     private static String formatMillimeters(double value) {
