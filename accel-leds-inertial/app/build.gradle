@@ -7,10 +7,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.example.accelledsinertial.continuous.k3scale'
+        applicationId 'com.example.accelledsinertial.continuous.k3scale.averages'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '2.4-escala-k3'
+        versionName '2.5-promedios-2-5-10-20'
     }
 }
