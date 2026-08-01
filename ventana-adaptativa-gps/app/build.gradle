@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.jorge.ventanaadaptativa'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.jorge.ventanaadaptativa.github.v253'
+        minSdk 26
+        targetSdk 35
+        versionCode 6
+        versionName '2.5.3-github'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
