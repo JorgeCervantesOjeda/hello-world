@@ -16,16 +16,115 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
+      - name: Apply v2.8 visual dead zone
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          source_path = Path('accel-leds-inertial/app/src/main/java/com/example/accelledsinertial/MainActivity.java')
+          source = source_path.read_text(encoding='utf-8')
+
+          old_constants = """    private static final float GREEN_FULL_SCALE = 3.0f;
+              private static final float RED_FULL_SCALE = 9.0f;
+
+              private static final int HISTORY_SIZE = 50;""".replace('              ', '')
+          new_constants = """    private static final float GREEN_FULL_SCALE = 3.0f;
+              private static final float RED_FULL_SCALE = 9.0f;
+
+              // La medición numérica se conserva, pero la barra no muestra ruido cerca de cero.
+              private static final float VISUAL_DEAD_ZONE = 0.015f;
+
+              private static final int HISTORY_SIZE = 50;""".replace('              ', '')
+          if old_constants not in source:
+              raise SystemExit('No se encontró el bloque de escalas esperado')
+          source = source.replace(old_constants, new_constants, 1)
+
+          new_method = """    private static float signedAverageFillFraction(float value) {
+              float magnitude = Math.abs(value);
+              if (magnitude <= VISUAL_DEAD_ZONE) return 0f;
+
+              float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
+              float visibleMagnitude = magnitude - VISUAL_DEAD_ZONE;
+              float visibleMaximum = maximum - VISUAL_DEAD_ZONE;
+              float normalized =
+                      (float)
+                              (Math.log1p(visibleMagnitude / 0.15f)
+                                      / Math.log1p(visibleMaximum / 0.15f));
+
+              return clamp(normalized, 0f, 1f);
+          }""".replace('              ', '')
+          pattern = r"    private static float signedAverageFillFraction\(float value\) \{.*?\n    \}\n\n    private final class LedView"
+          source, count = re.subn(
+              pattern,
+              new_method + "\n\n    private final class LedView",
+              source,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit('No se pudo reemplazar signedAverageFillFraction')
+
+          replacements = [
+              (
+                  '                    "PROMEDIOS — VERDE +3.0 / ROJO −9.0 m/s²",',
+                  '                    "PROMEDIOS — VERDE +3.0 / ROJO −9.0 · ZONA ±0.015 m/s²",'
+              ),
+              (
+                  '                boolean positive = value > 0f;\n                boolean negative = value < 0f;',
+                  '                boolean positive = value > VISUAL_DEAD_ZONE;\n                boolean negative = value < -VISUAL_DEAD_ZONE;'
+              ),
+              (
+                  '                        "Cada fila: positivo verde / negativo rojo",',
+                  '                        String.format(\n                                Locale.US,\n                                "Zona neutra visual ±%.3f m/s²; el número no se altera",\n                                VISUAL_DEAD_ZONE),'
+              ),
+              (
+                  '        message = "Calibrado. Promedios 2/5/10/20/50 activos";',
+                  '        message = "Calibrado. Zona neutra visual ±0.015 activa";'
+              ),
+          ]
+          for old, new in replacements:
+              if old not in source:
+                  raise SystemExit(f'No se encontró el texto esperado: {old[:80]}')
+              source = source.replace(old, new, 1)
+
+          source_path.write_text(source, encoding='utf-8')
+
+          gradle_path = Path('accel-leds-inertial/app/build.gradle')
+          gradle = gradle_path.read_text(encoding='utf-8')
+          old_app_id = "applicationId 'com.example.accelledsinertial.continuous.signedaverages50'"
+          old_version = "versionName '2.7-promedios-con-signo-50'"
+          if old_app_id not in gradle or old_version not in gradle:
+              raise SystemExit('No se encontró la versión 2.7 esperada en build.gradle')
+          gradle = gradle.replace(
+              old_app_id,
+              "applicationId 'com.example.accelledsinertial.continuous.signedaverages50.deadzone'",
+              1,
+          )
+          gradle = gradle.replace(
+              old_version,
+              "versionName '2.8-zona-neutra-visual'",
+              1,
+          )
+          gradle_path.write_text(gradle, encoding='utf-8')
+          PY
+
       - name: Build debug APK
         run: gradle -p accel-leds-inertial assembleDebug --stacktrace
+
       - uses: actions/upload-artifact@v4
         with:
-          name: AccelLEDsInertial-v2
+          name: AccelLEDsInertial-v2.8-zona-neutra
           path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
