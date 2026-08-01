@@ -1,0 +1,117 @@
+name: Apply GPS previous-speed fallback
+
+on:
+  push:
+    branches:
+      - agent/ventana-adaptativa-gps-clean
+    paths:
+      - .github/workflows/apply-gps-previous-speed.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/ventana-adaptativa-gps-clean
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Apply GPS fallback rule
+        shell: python
+        run: |
+          from pathlib import Path
+
+          java_path = Path("ventana-adaptativa-gps/app/src/main/java/com/jorge/ventanaadaptativa/MainActivity.java")
+          text = java_path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  "    private boolean speedValid;",
+                  "    private boolean speedValid = true;",
+              ),
+              (
+                  "    private double speedKmh;",
+                  "    private double speedKmh = 0.0;",
+              ),
+              (
+                  '        sourceText = text("Fuente: GPS; esperando velocidad válida", 14, Color.DKGRAY);',
+                  '        sourceText = text("Fuente: GPS; velocidad inicial 0.0 km/h", 14, Color.DKGRAY);',
+              ),
+              (
+                  '                        + "aunque sea menor de 5 km/h. A 0 km/h el objetivo es la apertura máxima. "\n                        + "Una pérdida de GPS no se interpreta como velocidad cero.",',
+                  '                        + "aunque sea menor de 5 km/h. A 0 km/h el objetivo es la apertura máxima. "\n                        + "Si una actualización GPS no incluye una velocidad válida, se conserva la anterior; "\n                        + "la velocidad inicial es 0 km/h. GPS desactivado no se interpreta como velocidad cero.",',
+              ),
+              (
+                  '                } else {\n                    speedKmh = 0.0;\n                    speedValid = false;\n                    sourceText.setText("Fuente: GPS; esperando velocidad válida");\n                    startGps();\n                }',
+                  '                } else {\n                    speedKmh = 0.0;\n                    speedValid = true;\n                    sourceText.setText("Fuente: GPS; velocidad inicial 0.0 km/h");\n                    startGps();\n                }',
+              ),
+              (
+                  '        if (!location.hasSpeed()) {\n            speedValid = false;\n            cancelAutomaticMovement();\n            sourceText.setText("Fuente: GPS; velocidad no válida");\n            refresh();\n            return;\n        }\n\n        speedKmh = Math.max(0.0, location.getSpeed() * 3.6);\n        speedValid = true;\n        sourceText.setText("Fuente: GPS");\n        refresh();',
+                  '        if (location.hasSpeed()\n                && Float.isFinite(location.getSpeed())\n                && location.getSpeed() >= 0.0f) {\n            speedKmh = location.getSpeed() * 3.6;\n            sourceText.setText("Fuente: GPS");\n        } else {\n            sourceText.setText(String.format(\n                    Locale.getDefault(),\n                    "Fuente: GPS; sin velocidad nueva, conservando %.1f km/h",\n                    speedKmh));\n        }\n\n        speedValid = true;\n        refresh();',
+              ),
+          ]
+
+          for old, new in replacements:
+              if old not in text:
+                  raise RuntimeError(f"Expected Java fragment not found: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          java_path.write_text(text, encoding="utf-8")
+
+          gradle_path = Path("ventana-adaptativa-gps/app/build.gradle")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          gradle = gradle.replace(
+              "applicationId 'com.jorge.ventanaadaptativa.github.v241'",
+              "applicationId 'com.jorge.ventanaadaptativa.github.v242'",
+          )
+          gradle = gradle.replace("versionName '2.4.1-github'", "versionName '2.4.2-github'")
+          gradle_path.write_text(gradle, encoding="utf-8")
+
+          readme_path = Path("ventana-adaptativa-gps/README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          marker = "## Velocidad cero\n"
+          section = (
+              "## Conservación de la velocidad GPS\n\n"
+              "La velocidad utilizada por el control se inicializa en 0 km/h. Cada actualización GPS "
+              "solo sustituye ese valor cuando incluye una velocidad válida. Si la ubicación no contiene "
+              "velocidad, o el campo no es utilizable, se conserva la última velocidad conocida y la "
+              "regulación continúa. GPS desactivado o permiso denegado siguen siendo fallos reales.\n\n"
+          )
+          if section not in readme:
+              if marker not in readme:
+                  raise RuntimeError("README insertion marker not found")
+              readme = readme.replace(marker, section + marker, 1)
+          readme_path.write_text(readme, encoding="utf-8")
+
+      - name: Build debug APK
+        run: gradle -p ventana-adaptativa-gps assembleDebug
+
+      - name: Upload patched APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VentanaAdaptativaGPS
+          path: ventana-adaptativa-gps/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Commit patched source and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-gps-previous-speed.yml
+          git add ventana-adaptativa-gps/app/src/main/java/com/jorge/ventanaadaptativa/MainActivity.java
+          git add ventana-adaptativa-gps/app/build.gradle
+          git add ventana-adaptativa-gps/README.md
+          git commit -m "Preserve previous GPS speed when updates omit speed"
+          git push origin HEAD:agent/ventana-adaptativa-gps-clean
