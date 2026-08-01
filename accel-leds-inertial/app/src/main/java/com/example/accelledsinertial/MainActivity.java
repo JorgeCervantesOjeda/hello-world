@@ -38,6 +38,11 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private static final float REQUIRED_PERSISTENCE_S = 0.28f;
     private static final float RELEASE_HOLD_S = 0.12f;
 
+    // Escala aproximada para un Kia K3 1.6:
+    // aceleración máxima sostenida cercana a +3 m/s² y frenado fuerte hasta -9 m/s².
+    private static final float GREEN_FULL_SCALE = 3.0f;
+    private static final float RED_FULL_SCALE = 9.0f;
+
     private SensorManager sensorManager;
     private Sensor motionSensor;
     private boolean nativeLinearSensor;
@@ -356,7 +361,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 .putFloat("bias", zeroBias)
                 .apply();
         resetMotionGate();
-        message = "Calibrado. Indicador continuo activo";
+        message = "Calibrado. Escala K3 activa";
     }
 
     private void setZero() {
@@ -447,8 +452,12 @@ public final class MainActivity extends Activity implements SensorEventListener,
             int right = width - side;
             int availablePixels = Math.max(1, right - left);
 
-            float redFraction = fillFraction(Math.max(0f, -longitudinal), 7f);
-            float greenFraction = fillFraction(Math.max(0f, longitudinal), 3.5f);
+            float redFraction = fillFraction(
+                    Math.max(0f, -longitudinal),
+                    RED_FULL_SCALE);
+            float greenFraction = fillFraction(
+                    Math.max(0f, longitudinal),
+                    GREEN_FULL_SCALE);
             int redPixels = Math.round(availablePixels * redFraction);
             int greenPixels = Math.round(availablePixels * greenFraction);
 
@@ -594,16 +603,21 @@ public final class MainActivity extends Activity implements SensorEventListener,
                             availablePixels),
                     String.format(
                             Locale.US,
+                            "Escala completa: rojo −%.1f · verde +%.1f m/s²",
+                            RED_FULL_SCALE,
+                            GREEN_FULL_SCALE),
+                    String.format(
+                            Locale.US,
                             "GPS: %.1f km/h · edad %s",
                             gpsSpeed * 3.6f,
                             gpsAge),
                     "Filtro: dos etapas + persistencia 0.28 s",
                     "Estado: " + (calibrated ? "calibrado" : "sin calibrar")};
 
-            float y = height * 0.665f;
+            float y = height * 0.655f;
             for (String line : lines) {
                 canvas.drawText(line, width * 0.035f, y, paint);
-                y += height * 0.032f;
+                y += height * 0.031f;
             }
         }
 
