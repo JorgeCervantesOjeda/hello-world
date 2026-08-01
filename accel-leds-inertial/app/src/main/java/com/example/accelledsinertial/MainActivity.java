@@ -27,7 +27,9 @@ import android.view.WindowManager;
 import java.util.Arrays;
 import java.util.Locale;
 
-public final class MainActivity extends Activity implements SensorEventListener, LocationListener {
+public final class MainActivity extends Activity
+        implements SensorEventListener, LocationListener {
+
     private static final int REQ_LOCATION = 7;
 
     private static final float LPF_STAGE_1_TAU_S = 0.075f;
@@ -43,6 +45,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private static final float RED_FULL_SCALE = 9.0f;
     private static final int HISTORY_SIZE = 20;
 
+    private static final int[] AVERAGE_WINDOWS = new int[]{2, 5, 10, 20};
+
     private SensorManager sensorManager;
     private Sensor motionSensor;
     private boolean nativeLinearSensor;
@@ -56,14 +60,10 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private final float[] filteredStage2 = new float[3];
     private final float[] axis = new float[]{1f, 0f, 0f};
 
-    // Historial de la aceleración longitudinal filtrada, antes de la compuerta antivibración.
     private final float[] accelerationHistory = new float[HISTORY_SIZE];
+    private final float[] averages = new float[4];
     private int historyNext;
     private int historyCount;
-    private float average2;
-    private float average5;
-    private float average10;
-    private float average20;
 
     private float zeroBias;
     private long lastSensorNs;
@@ -93,6 +93,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
         WindowManager.LayoutParams params = getWindow().getAttributes();
         params.screenBrightness = 1f;
         getWindow().setAttributes(params);
@@ -126,7 +127,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
         super.onResume();
         hideUi();
         if (motionSensor != null) {
-            sensorManager.registerListener(this, motionSensor, SensorManager.SENSOR_DELAY_GAME);
+            sensorManager.registerListener(
+                    this, motionSensor, SensorManager.SENSOR_DELAY_GAME);
         }
         startLocation();
     }
@@ -150,14 +152,19 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     private void startLocation() {
         if (locationManager == null) return;
+
         if (Build.VERSION.SDK_INT >= 23
                 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
+            requestPermissions(
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    REQ_LOCATION);
             return;
         }
+
         try {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this);
+            locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER, 0L, 0f, this);
         } catch (Exception ignored) {
         }
     }
@@ -170,7 +177,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == REQ_LOCATION
                 && results.length > 0
@@ -216,6 +224,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
             rawLongitudinal = 0f;
             resetMotionGate();
         }
+
         view.invalidate();
     }
 
@@ -224,10 +233,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
         historyNext = (historyNext + 1) % HISTORY_SIZE;
         if (historyCount < HISTORY_SIZE) historyCount++;
 
-        average2 = averageRecent(2);
-        average5 = averageRecent(5);
-        average10 = averageRecent(10);
-        average20 = averageRecent(20);
+        for (int i = 0; i < AVERAGE_WINDOWS.length; i++) {
+            averages[i] = averageRecent(AVERAGE_WINDOWS[i]);
+        }
     }
 
     private float averageRecent(int requestedCount) {
@@ -245,12 +253,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     private void clearAccelerationHistory() {
         Arrays.fill(accelerationHistory, 0f);
+        Arrays.fill(averages, 0f);
         historyNext = 0;
         historyCount = 0;
-        average2 = 0f;
-        average5 = 0f;
-        average10 = 0f;
-        average20 = 0f;
     }
 
     private void updatePersistenceGate(float value, float dt) {
@@ -272,7 +277,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 candidateTimeS = 0f;
             }
 
-            candidateTimeS = Math.min(REQUIRED_PERSISTENCE_S, candidateTimeS + dt);
+            candidateTimeS =
+                    Math.min(REQUIRED_PERSISTENCE_S, candidateTimeS + dt);
             if (candidateTimeS >= REQUIRED_PERSISTENCE_S) {
                 confirmedSign = sign;
                 longitudinal = value;
@@ -326,6 +332,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
             zeroMean[i] = 0;
             for (int j = 0; j < 3; j++) covariance[i][j] = 0;
         }
+
         message = "CALIBRACIÓN: permanece detenido durante 3 s";
     }
 
@@ -333,11 +340,15 @@ public final class MainActivity extends Activity implements SensorEventListener,
         if (calibrationState == 0) return;
 
         long elapsed = SystemClock.elapsedRealtime() - calibrationStartMs;
+
         if (calibrationState == 1) {
             if (elapsed > 500L) {
                 zeroSamples++;
-                for (int i = 0; i < 3; i++) zeroMean[i] += filteredStage2[i];
+                for (int i = 0; i < 3; i++) {
+                    zeroMean[i] += filteredStage2[i];
+                }
             }
+
             if (elapsed >= 3000L) {
                 calibrationState = 2;
                 message = "ACELERA SUAVEMENTE HACIA DELANTE durante 5 s";
@@ -355,30 +366,38 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 }
             }
         }
+
         if (elapsed >= 8000L) finishCalibration();
     }
 
     private void finishCalibration() {
         calibrationState = 0;
+
         if (calibrationSamples < 15) {
-            message = "Calibración insuficiente. Repite con una aceleración más clara";
+            message =
+                    "Calibración insuficiente. Repite con una aceleración más clara";
             return;
         }
 
         double[] vector = new double[]{1, 1, 1};
         normalize(vector);
+
         for (int iteration = 0; iteration < 20; iteration++) {
             double[] next = new double[3];
             for (int i = 0; i < 3; i++) {
-                for (int j = 0; j < 3; j++) next[i] += covariance[i][j] * vector[j];
+                for (int j = 0; j < 3; j++) {
+                    next[i] += covariance[i][j] * vector[j];
+                }
             }
             normalize(next);
             vector = next;
         }
 
-        double sign = vector[0] * calibrationMean[0]
-                + vector[1] * calibrationMean[1]
-                + vector[2] * calibrationMean[2];
+        double sign =
+                vector[0] * calibrationMean[0]
+                        + vector[1] * calibrationMean[1]
+                        + vector[2] * calibrationMean[2];
+
         if (sign < 0) {
             for (int i = 0; i < 3; i++) vector[i] = -vector[i];
         }
@@ -388,10 +407,12 @@ public final class MainActivity extends Activity implements SensorEventListener,
         axis[2] = (float) vector[2];
 
         if (zeroSamples > 0) {
-            float[] averageZero = new float[]{
-                    (float) (zeroMean[0] / zeroSamples),
-                    (float) (zeroMean[1] / zeroSamples),
-                    (float) (zeroMean[2] / zeroSamples)};
+            float[] averageZero =
+                    new float[]{
+                        (float) (zeroMean[0] / zeroSamples),
+                        (float) (zeroMean[1] / zeroSamples),
+                        (float) (zeroMean[2] / zeroSamples)
+                    };
             zeroBias = dot(averageZero, axis);
         } else {
             zeroBias = 0f;
@@ -405,13 +426,15 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 .putFloat("z", axis[2])
                 .putFloat("bias", zeroBias)
                 .apply();
+
         resetMotionGate();
         clearAccelerationHistory();
-        message = "Calibrado. Promedios 2/5/10/20 activos";
+        message = "Calibrado. Ocho barras de promedios activas";
     }
 
     private void setZero() {
         if (!calibrated) return;
+
         zeroBias = dot(filteredStage2, axis);
         prefs.edit().putFloat("bias", zeroBias).apply();
         resetMotionGate();
@@ -454,16 +477,19 @@ public final class MainActivity extends Activity implements SensorEventListener,
     }
 
     private static void normalize(double[] vector) {
-        double m = Math.sqrt(
-                vector[0] * vector[0]
-                        + vector[1] * vector[1]
-                        + vector[2] * vector[2]);
+        double m =
+                Math.sqrt(
+                        vector[0] * vector[0]
+                                + vector[1] * vector[1]
+                                + vector[2] * vector[2]);
+
         if (m < 1e-9) {
             vector[0] = 1;
             vector[1] = 0;
             vector[2] = 0;
             return;
         }
+
         for (int i = 0; i < 3; i++) vector[i] /= m;
     }
 
@@ -471,11 +497,14 @@ public final class MainActivity extends Activity implements SensorEventListener,
         return Math.max(minimum, Math.min(maximum, value));
     }
 
-    private static float fillFraction(float acceleration, float maximum) {
-        if (acceleration <= DETECT_THRESHOLD) return 0f;
-        float normalized = (float) (
-                Math.log1p((acceleration - DETECT_THRESHOLD) / 0.15f)
-                        / Math.log1p((maximum - DETECT_THRESHOLD) / 0.15f));
+    private static float averageFillFraction(float acceleration, float maximum) {
+        if (acceleration <= 0f) return 0f;
+
+        float normalized =
+                (float)
+                        (Math.log1p(acceleration / 0.15f)
+                                / Math.log1p(maximum / 0.15f));
+
         return clamp(normalized, 0f, 1f);
     }
 
@@ -494,48 +523,164 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
             int width = getWidth();
             int height = getHeight();
-            int side = Math.round(width * 0.035f);
-            int left = side;
-            int right = width - side;
+
+            int labelWidth = Math.round(width * 0.155f);
+            int left = labelWidth + Math.round(width * 0.012f);
+            int right = width - Math.round(width * 0.035f);
             int availablePixels = Math.max(1, right - left);
 
-            float redFraction = fillFraction(Math.max(0f, -longitudinal), RED_FULL_SCALE);
-            float greenFraction = fillFraction(Math.max(0f, longitudinal), GREEN_FULL_SCALE);
-            int redPixels = Math.round(availablePixels * redFraction);
-            int greenPixels = Math.round(availablePixels * greenFraction);
-
-            int redTop = Math.round(height * 0.23f);
-            int redBottom = Math.round(height * 0.40f);
-            int greenTop = Math.round(height * 0.46f);
-            int greenBottom = Math.round(height * 0.63f);
-
-            drawContinuousBar(
-                    canvas, left, right, redTop, redBottom, redPixels, true,
-                    Color.rgb(255, 35, 25), Color.rgb(35, 5, 5));
-            drawContinuousBar(
-                    canvas, left, right, greenTop, greenBottom, greenPixels, false,
-                    Color.rgb(0, 255, 70), Color.rgb(4, 32, 12));
-
             drawButton(canvas, 0, "CALIBRAR");
-            drawButton(canvas, 1, showInfo ? "OCULTAR INFO" : "MOSTRAR INFO");
+            drawButton(
+                    canvas,
+                    1,
+                    showInfo ? "OCULTAR INFO" : "MOSTRAR INFO");
             drawButton(canvas, 2, "AJUSTAR CERO");
 
+            drawAverageGroup(
+                    canvas,
+                    width,
+                    height,
+                    left,
+                    right,
+                    availablePixels,
+                    true,
+                    height * 0.205f,
+                    height * 0.420f);
+
+            drawAverageGroup(
+                    canvas,
+                    width,
+                    height,
+                    left,
+                    right,
+                    availablePixels,
+                    false,
+                    height * 0.465f,
+                    height * 0.680f);
+
             if (showInfo) {
-                drawInfo(canvas, width, height, redPixels, greenPixels, availablePixels);
+                drawInfo(canvas, width, height);
             }
 
             paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(height * 0.031f);
+            paint.setTextSize(height * 0.028f);
             paint.setColor(Color.LTGRAY);
             canvas.drawText(message, width / 2f, height * 0.925f, paint);
 
-            paint.setTextSize(height * 0.022f);
+            paint.setTextSize(height * 0.021f);
             paint.setColor(Color.GRAY);
             canvas.drawText(
                     "Uso experimental · teléfono fijado · no manipular al conducir",
                     width / 2f,
                     height * 0.982f,
+                    paint);
+        }
+
+        private void drawAverageGroup(
+                Canvas canvas,
+                int screenWidth,
+                int screenHeight,
+                int left,
+                int right,
+                int availablePixels,
+                boolean redGroup,
+                float groupTop,
+                float groupBottom) {
+
+            paint.setAntiAlias(true);
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(screenHeight * 0.023f);
+            paint.setColor(
+                    redGroup
+                            ? Color.rgb(255, 120, 115)
+                            : Color.rgb(100, 255, 145));
+
+            canvas.drawText(
+                    redGroup ? "FRENADO — PROMEDIOS" : "ACELERACIÓN — PROMEDIOS",
+                    screenWidth * 0.018f,
+                    groupTop - screenHeight * 0.012f,
+                    paint);
+
+            float groupHeight = groupBottom - groupTop;
+            float rowGap = screenHeight * 0.008f;
+            float rowHeight = (groupHeight - 3f * rowGap) / 4f;
+
+            for (int i = 0; i < AVERAGE_WINDOWS.length; i++) {
+                int top = Math.round(groupTop + i * (rowHeight + rowGap));
+                int bottom = Math.round(top + rowHeight);
+
+                float value = averages[i];
+                float magnitude = redGroup
+                        ? Math.max(0f, -value)
+                        : Math.max(0f, value);
+                float fullScale = redGroup ? RED_FULL_SCALE : GREEN_FULL_SCALE;
+                int pixels = Math.round(
+                        availablePixels
+                                * averageFillFraction(magnitude, fullScale));
+
+                drawContinuousBar(
+                        canvas,
+                        left,
+                        right,
+                        top,
+                        bottom,
+                        pixels,
+                        redGroup,
+                        redGroup
+                                ? Color.rgb(255, 35, 25)
+                                : Color.rgb(0, 255, 70),
+                        redGroup
+                                ? Color.rgb(35, 5, 5)
+                                : Color.rgb(4, 32, 12));
+
+                drawWindowLabel(
+                        canvas,
+                        screenWidth,
+                        top,
+                        bottom,
+                        AVERAGE_WINDOWS[i],
+                        value,
+                        redGroup);
+            }
+        }
+
+        private void drawWindowLabel(
+                Canvas canvas,
+                int screenWidth,
+                int top,
+                int bottom,
+                int window,
+                float value,
+                boolean redGroup) {
+
+            paint.setAntiAlias(true);
+            paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setTextSize((bottom - top) * 0.47f);
+            paint.setColor(Color.WHITE);
+
+            float centerY =
+                    (top + bottom) / 2f
+                            - (paint.ascent() + paint.descent()) / 2f;
+
+            canvas.drawText(
+                    Integer.toString(window),
+                    screenWidth * 0.055f,
+                    centerY,
+                    paint);
+
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize((bottom - top) * 0.34f);
+            paint.setColor(
+                    redGroup
+                            ? Color.rgb(255, 175, 170)
+                            : Color.rgb(155, 255, 180));
+
+            String valueText = String.format(Locale.US, "%+.3f", value);
+            canvas.drawText(
+                    valueText,
+                    screenWidth * 0.078f,
+                    centerY,
                     paint);
         }
 
@@ -549,6 +694,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 boolean fromRight,
                 int activeColor,
                 int trackColor) {
+
             paint.setAntiAlias(false);
             paint.setAlpha(255);
             paint.setColor(trackColor);
@@ -559,24 +705,27 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
             int activeLeft = fromRight ? right - pixels : left;
             int activeRight = fromRight ? right : left + pixels;
+
             paint.setColor(activeColor);
             canvas.drawRect(activeLeft, top, activeRight, bottom, paint);
 
             int edgeX = fromRight ? activeLeft : activeRight - 1;
             paint.setColor(Color.WHITE);
-            paint.setAlpha(155);
+            paint.setAlpha(150);
             canvas.drawRect(edgeX, top, edgeX + 1, bottom, paint);
             paint.setAlpha(255);
         }
 
         private void drawButton(Canvas canvas, int index, String label) {
             paint.setAntiAlias(true);
+
             float margin = getWidth() * 0.02f;
             float gap = getWidth() * 0.012f;
-            float buttonWidth = (getWidth() - 2f * margin - 2f * gap) / 3f;
+            float buttonWidth =
+                    (getWidth() - 2f * margin - 2f * gap) / 3f;
             float x = margin + index * (buttonWidth + gap);
-            float y = getHeight() * 0.035f;
-            float buttonHeight = getHeight() * 0.13f;
+            float y = getHeight() * 0.025f;
+            float buttonHeight = getHeight() * 0.12f;
 
             paint.setColor(Color.rgb(32, 32, 32));
             rectangle.set(x, y, x + buttonWidth, y + buttonHeight);
@@ -587,7 +736,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
                     paint);
 
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize(getHeight() * 0.043f);
+            paint.setTextSize(getHeight() * 0.039f);
             paint.setColor(Color.WHITE);
             canvas.drawText(
                     label,
@@ -596,43 +745,53 @@ public final class MainActivity extends Activity implements SensorEventListener,
                     paint);
         }
 
-        private void drawInfo(
-                Canvas canvas,
-                int width,
-                int height,
-                int redPixels,
-                int greenPixels,
-                int availablePixels) {
+        private void drawInfo(Canvas canvas, int width, int height) {
             paint.setAntiAlias(true);
             paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize(height * 0.0195f);
+            paint.setTextSize(height * 0.0185f);
             paint.setColor(Color.rgb(205, 205, 205));
 
-            String gpsAge = lastGpsMs == 0
-                    ? "sin datos"
-                    : (SystemClock.elapsedRealtime() - lastGpsMs) + " ms";
-            float confidence = clamp(
-                    candidateTimeS / REQUIRED_PERSISTENCE_S,
-                    0f,
-                    1f) * 100f;
+            String gpsAge =
+                    lastGpsMs == 0
+                            ? "sin datos"
+                            : (SystemClock.elapsedRealtime() - lastGpsMs) + " ms";
 
-            String[] lines = new String[]{
-                    String.format(Locale.US, "Medición filtrada: %+.5f m/s²", rawLongitudinal),
-                    String.format(Locale.US, "Promedio últimas 2:  %+.5f m/s²", average2),
-                    String.format(Locale.US, "Promedio últimas 5:  %+.5f m/s²", average5),
-                    String.format(Locale.US, "Promedio últimas 10: %+.5f m/s²", average10),
-                    String.format(Locale.US, "Promedio últimas 20: %+.5f m/s²", average20),
-                    String.format(Locale.US, "Salida LED: %+.5f m/s² · confianza %.0f%%", longitudinal, confidence),
-                    String.format(Locale.US, "Píxeles: rojo %d · verde %d · ancho %d", redPixels, greenPixels, availablePixels),
-                    String.format(Locale.US, "Escala: rojo −%.1f · verde +%.1f m/s²", RED_FULL_SCALE, GREEN_FULL_SCALE),
-                    String.format(Locale.US, "GPS: %.1f km/h · edad %s", gpsSpeed * 3.6f, gpsAge),
-                    "Filtro: dos etapas + persistencia 0.28 s",
-                    String.format(Locale.US, "Estado: %s · historial %d/20", calibrated ? "calibrado" : "sin calibrar", historyCount)};
+            float confidence =
+                    clamp(
+                                    candidateTimeS
+                                            / REQUIRED_PERSISTENCE_S,
+                                    0f,
+                                    1f)
+                            * 100f;
 
-            float y = height * 0.652f;
+            String[] lines =
+                    new String[]{
+                        String.format(
+                                Locale.US,
+                                "Filtrada %+.4f · salida aceptada %+.4f m/s²",
+                                rawLongitudinal,
+                                longitudinal),
+                        String.format(
+                                Locale.US,
+                                "Confianza %.0f%% · historial %d/20",
+                                confidence,
+                                historyCount),
+                        String.format(
+                                Locale.US,
+                                "Escala rojo −%.1f · verde +%.1f m/s²",
+                                RED_FULL_SCALE,
+                                GREEN_FULL_SCALE),
+                        String.format(
+                                Locale.US,
+                                "GPS %.1f km/h · edad %s",
+                                gpsSpeed * 3.6f,
+                                gpsAge)
+                    };
+
+            float y = height * 0.725f;
             for (String line : lines) {
                 canvas.drawText(line, width * 0.035f, y, paint);
-                y += height * 0.0225f;
+                y += height * 0.025f;
             }
         }
 
@@ -641,7 +800,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
             if (event.getAction() != MotionEvent.ACTION_UP) return true;
 
             float third = getWidth() / 3f;
-            if (event.getY() < getHeight() * 0.2f) {
+            if (event.getY() < getHeight() * 0.17f) {
                 if (event.getX() < third) {
                     beginCalibration();
                 } else if (event.getX() < 2f * third) {
