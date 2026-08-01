@@ -786,9 +786,18 @@ public final class MainActivity extends Activity
 
             String speedText =
                     fresh
-                            ? String.format(Locale.US, "%.1f", gpsSpeed * 3.6f)
+                            ? String.format(Locale.US, "%.4f", gpsSpeed * 3.6f)
                             : "---";
             paint.setTextSize(height * 0.125f);
+            float maximumSpeedTextWidth = (right - left) * 0.90f;
+            float measuredSpeedTextWidth = paint.measureText(speedText);
+            if (measuredSpeedTextWidth > maximumSpeedTextWidth
+                    && measuredSpeedTextWidth > 0f) {
+                paint.setTextSize(
+                        paint.getTextSize()
+                                * maximumSpeedTextWidth
+                                / measuredSpeedTextWidth);
+            }
             paint.setColor(fresh ? Color.WHITE : Color.rgb(120, 120, 120));
             canvas.drawText(
                     speedText,
@@ -943,7 +952,7 @@ public final class MainActivity extends Activity
                         "GPS directo con precisión, edad y satélites",
                         String.format(
                                 Locale.US,
-                                "GPS %.1f km/h · edad %s",
+                                "GPS %.4f km/h · edad %s",
                                 gpsSpeed * 3.6f,
                                 gpsAge)
                     };
