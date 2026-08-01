@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.example.accelledsinertial.continuous.gpsspeed.v30.decimals4'
+        applicationId 'com.example.accelledsinertial.continuous.gpsspeed.v31.dualaccel'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '3.0-velocimetro-gps-4-decimales'
+        versionName '3.1-doble-acelerometro-inercial-gps'
     }
 }
 
