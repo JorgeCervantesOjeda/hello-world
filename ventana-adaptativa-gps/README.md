@@ -5,24 +5,45 @@ Prototipo Android que simula una función de software para ajustar automáticame
 ## Comportamiento
 
 - La función está apagada por defecto.
-- Al activarla, toma inmediatamente la apertura actual como referencia.
-- Si el vehículo circula a más de 5 km/h, también toma la velocidad actual y comienza a regular.
-- Si está detenido, conserva la apertura y fija la velocidad de referencia al superar 5 km/h.
+- Al activarla, toma inmediatamente la apertura actual como referencia si existe una velocidad válida.
 - Subir o bajar manualmente la ventana suspende temporalmente el control.
-- Al terminar el movimiento manual, la nueva apertura se convierte en referencia si es válida.
+- Al soltar el control manual, la apertura final se convierte en la nueva referencia si es válida.
 - Los cierres automáticos nunca dejan menos de 25 mm de apertura.
-- Abrir totalmente la ventana estando detenido no crea una referencia de flujo.
+- Abrir totalmente la ventana a 0 km/h no crea una referencia nueva.
 - Incluye un modo de prueba para simular velocidad sin conducir.
 
-## Caída de velocidad durante un movimiento
+## Velocidad mínima de referencia
 
-Si la velocidad baja a 5 km/h o menos mientras la ventana todavía se dirige hacia un objetivo automático:
+La velocidad mínima de 5 km/h solo se usa al capturar una referencia.
 
-1. Se congela el último objetivo calculado con una velocidad válida.
-2. La ventana continúa hasta alcanzar ese objetivo.
-3. Una vez alcanzado, el control se suspende mientras la velocidad siga por debajo del umbral.
-4. No se calculan objetivos nuevos utilizando una velocidad cercana a cero.
-5. Una intervención manual sigue cancelando inmediatamente el movimiento automático.
+Al soltar el control manual:
+
+```text
+velocidad_referencia = máximo(velocidad_real_al_soltar, 5 km/h)
+apertura_referencia = apertura_al_soltar
+```
+
+Ejemplo: si se suelta la ventana con una apertura de 50 mm y una velocidad real de 2 km/h, la referencia queda en 50 mm a 5 km/h.
+
+Durante la regulación no se sustituye la velocidad real por la mínima. El objetivo se calcula continuamente con la velocidad real:
+
+```text
+apertura_objetivo = apertura_referencia × velocidad_referencia / velocidad_real
+```
+
+En el ejemplo anterior, mientras la velocidad real continúe en 2 km/h:
+
+```text
+apertura_objetivo = 50 × 5 / 2 = 125 mm
+```
+
+Cualquier velocidad válida puede utilizarse durante la operación, aunque sea menor de 5 km/h.
+
+## Velocidad cero
+
+Una lectura válida de 0 km/h es un estado operativo válido. Como no puede dividirse entre cero, su objetivo es la apertura máxima de 450 mm.
+
+Una lectura GPS ausente, inválida o desactivada no se interpreta como 0 km/h. En ese caso la regulación se suspende sin generar un objetivo nuevo.
 
 ## Aprendizaje del tiempo de recorrido
 
@@ -50,13 +71,9 @@ Si la ventana no alcanza el objetivo dentro del tiempo calculado, el movimiento 
 
 En el simulador el tiempo completo inicial es de 17 segundos, coherente con la velocidad visual del cristal. Se sustituye por los valores aprendidos cuando existen movimientos suficientes para medirlo.
 
-## Fórmula de apertura
+## Límites
 
-```text
-apertura_objetivo = apertura_referencia × velocidad_referencia / velocidad_actual
-```
-
-El resultado se limita al intervalo de 25 a 450 mm.
+El objetivo automático se limita al intervalo de 25 a 450 mm.
 
 ## Requisitos
 
