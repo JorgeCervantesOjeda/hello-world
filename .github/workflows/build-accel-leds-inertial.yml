@@ -1,4 +1,4 @@
-name: Build Accel LEDs Inercial
+name: Build GPS Velocidad y Aceleración
 
 on:
   push:
@@ -31,6 +31,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AccelLEDsInertial-v3.1-doble-acelerometro
+          name: GPS-Velocidad-Aceleracion-v4.0
           path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
