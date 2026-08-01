@@ -40,9 +40,10 @@ public final class MainActivity extends Activity implements LocationListener {
     private static final double FULL_OPEN_TOLERANCE_MM = 5.0;
     private static final double ARRIVAL_TOLERANCE_MM = 3.0;
     private static final double TARGET_RESTART_DIFFERENCE_MM = 5.0;
+    private static final double AUTOMATIC_MOVEMENT_STEP_MM = 15.0;
 
     private static final double MIN_LEARNING_DISTANCE_MM = 20.0;
-    private static final double DEFAULT_FULL_TRAVEL_MS = 17000.0;
+    private static final double DEFAULT_FULL_TRAVEL_MS = 9000.0;
     private static final double TIME_MARGIN_FACTOR = 1.4;
     private static final long FIXED_TIME_MARGIN_MS = 300L;
     private static final long MINIMUM_MOVE_TIMEOUT_MS = 1200L;
@@ -494,7 +495,10 @@ public final class MainActivity extends Activity implements LocationListener {
         }
 
         setGapProgrammatically(clamp(
-                gapMm + clamp(differenceMm, -8.0, 8.0),
+                gapMm + clamp(
+                        differenceMm,
+                        -AUTOMATIC_MOVEMENT_STEP_MM,
+                        AUTOMATIC_MOVEMENT_STEP_MM),
                 MIN_AUTOMATIC_GAP_MM,
                 MAX_GAP_MM));
 
