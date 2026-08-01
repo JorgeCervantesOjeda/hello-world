@@ -31,10 +31,8 @@ import java.util.Locale;
 public final class MainActivity extends Activity implements LocationListener {
     private static final int LOCATION_REQUEST = 1001;
 
-    // Solo se usa al capturar una referencia, nunca durante la operación.
     private static final double MIN_REFERENCE_SPEED_KMH = 5.0;
     private static final double ZERO_SPEED_EPSILON_KMH = 0.01;
-
     private static final double MAX_GAP_MM = 450.0;
     private static final double AUTOMATIC_POSITIVE_FLOOR_MM = Double.MIN_VALUE;
     private static final double CONTROL_EPSILON_MM = 1.0e-9;
@@ -57,6 +55,9 @@ public final class MainActivity extends Activity implements LocationListener {
     private SeekBar speedSeek;
     private TextView speedText;
     private TextView gapText;
+    private TextView requestedFlowText;
+    private TextView calculatedFlowText;
+    private TextView flowDifferenceText;
     private TextView stateText;
     private TextView referenceText;
     private TextView timingText;
@@ -74,11 +75,9 @@ public final class MainActivity extends Activity implements LocationListener {
     private boolean openingTimeLearned;
     private boolean closingTimeLearned;
 
-    // La velocidad se inicializa una sola vez en cero. Las interrupciones GPS no la reinician.
     private double speedKmh = 0.0;
     private double lastGpsSpeedKmh = 0.0;
 
-    // Todas las magnitudes de apertura permanecen en double.
     private double gapMm;
     private double referenceMeasuredSpeedKmh;
     private double referenceCalculationSpeedKmh;
@@ -135,7 +134,7 @@ public final class MainActivity extends Activity implements LocationListener {
         root.addView(title);
 
         TextView subtitle = text(
-                "Control continuo de apertura con velocidad GPS",
+                "Control continuo de apertura y flujo relativo",
                 15,
                 Color.DKGRAY);
         subtitle.setGravity(Gravity.CENTER);
@@ -196,8 +195,27 @@ public final class MainActivity extends Activity implements LocationListener {
         gapText.setGravity(Gravity.CENTER);
         root.addView(gapText);
 
+        requestedFlowText = text("Flujo solicitado: sin referencia", 18, Color.rgb(25, 45, 66));
+        requestedFlowText.setGravity(Gravity.CENTER);
+        root.addView(requestedFlowText);
+
+        calculatedFlowText = text("Flujo real calculado: 0 mm·km/h", 18, Color.rgb(17, 87, 138));
+        calculatedFlowText.setGravity(Gravity.CENTER);
+        root.addView(calculatedFlowText);
+
+        flowDifferenceText = text("Diferencia: sin referencia", 14, Color.DKGRAY);
+        flowDifferenceText.setGravity(Gravity.CENTER);
+        root.addView(flowDifferenceText);
+
+        TextView flowHint = text(
+                "Flujo relativo = apertura × velocidad. Para obtener m³/s se requiere calibrar el área real y la aerodinámica de la ventana.",
+                13,
+                Color.DKGRAY);
+        flowHint.setGravity(Gravity.CENTER);
+        root.addView(flowHint);
+
         TextView manualHint = text(
-                "Arrastra verticalmente el borde del cristal. El control usa valores double sin convertirlos a enteros.",
+                "Arrastra verticalmente el borde del cristal. El control conserva valores double sin convertirlos a enteros.",
                 14,
                 Color.DKGRAY);
         root.addView(manualHint);
@@ -216,11 +234,10 @@ public final class MainActivity extends Activity implements LocationListener {
         root.addView(timingText);
 
         TextView rules = text(
-                "Cualquier apertura manual positiva puede definir una referencia. "
-                        + "La velocidad de referencia se limita a un mínimo de 5 km/h solo al capturarla. "
-                        + "Durante la regulación se usa la velocidad real almacenada. "
-                        + "A 0 km/h el objetivo es 450 mm. Para cualquier velocidad positiva, "
-                        + "el objetivo automático se conserva como un double estrictamente mayor que cero. "
+                "El flujo solicitado se fija con la referencia manual: apertura de referencia por velocidad de referencia de cálculo. "
+                        + "El flujo real calculado usa la apertura y velocidad actuales. "
+                        + "A 0 km/h el flujo calculado es cero aunque la ventana se abra a 450 mm. "
+                        + "Para cualquier velocidad positiva, el objetivo automático permanece mayor que cero. "
                         + "Solo un cierre manual completo puede llevar la apertura a 0 mm y borrar la referencia.",
                 14,
                 Color.DKGRAY);
@@ -368,7 +385,7 @@ public final class MainActivity extends Activity implements LocationListener {
             }
             setGapProgrammatically(newTargetMm);
             setState(isZeroSpeed()
-                    ? "Objetivo de 0 km/h alcanzado: apertura máxima."
+                    ? "Objetivo de 0 km/h alcanzado: apertura máxima; flujo calculado igual a cero."
                     : String.format(
                             Locale.getDefault(),
                             "Regulación continua a %.1f km/h. Objetivo: %s mm.",
@@ -400,8 +417,6 @@ public final class MainActivity extends Activity implements LocationListener {
         if (calculatedMm == Double.POSITIVE_INFINITY || calculatedMm >= MAX_GAP_MM) {
             return MAX_GAP_MM;
         }
-
-        // Nunca devuelve cero para una regulación automática con velocidad positiva.
         return Math.max(AUTOMATIC_POSITIVE_FLOOR_MM, calculatedMm);
     }
 
@@ -453,7 +468,6 @@ public final class MainActivity extends Activity implements LocationListener {
             nextGapMm = Math.min(automaticMoveTargetGapMm, nextGapMm);
         }
 
-        // El movimiento automático jamás puede ordenar un cierre total.
         setGapProgrammatically(clamp(
                 nextGapMm,
                 AUTOMATIC_POSITIVE_FLOOR_MM,
@@ -463,7 +477,7 @@ public final class MainActivity extends Activity implements LocationListener {
             completeAutomaticTarget();
         } else {
             setState(isZeroSpeed()
-                    ? "Velocidad real 0 km/h: abriendo hacia 450 mm."
+                    ? "Velocidad real 0 km/h: abriendo hacia 450 mm; flujo calculado igual a cero."
                     : String.format(
                             Locale.getDefault(),
                             "Regulando a %.1f km/h. Objetivo continuo: %s mm.",
@@ -477,7 +491,7 @@ public final class MainActivity extends Activity implements LocationListener {
         setGapProgrammatically(automaticMoveTargetGapMm);
         finishAutomaticMovement(true);
         setState(isZeroSpeed()
-                ? "Objetivo de 0 km/h alcanzado: apertura máxima."
+                ? "Objetivo de 0 km/h alcanzado: apertura máxima; flujo calculado igual a cero."
                 : String.format(
                         Locale.getDefault(),
                         "Objetivo automático alcanzado a %.1f km/h: %s mm.",
@@ -487,7 +501,6 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void setGapProgrammatically(double newGapMm) {
-        // No se convierte a int; el estado y la vista reciben el double completo.
         gapMm = clamp(newGapMm, AUTOMATIC_POSITIVE_FLOOR_MM, MAX_GAP_MM);
         windowView.setGap(gapMm);
     }
@@ -550,6 +563,17 @@ public final class MainActivity extends Activity implements LocationListener {
         automaticMoveDeadlineMs = 0L;
     }
 
+    private double requestedFlow() {
+        if (!active) {
+            return 0.0;
+        }
+        return referenceGapMm * referenceCalculationSpeedKmh;
+    }
+
+    private double calculatedFlow() {
+        return gapMm * speedKmh;
+    }
+
     private void refresh() {
         speedText.setText(String.format(Locale.getDefault(), "%.1f km/h", speedKmh));
         gapText.setText(String.format(
@@ -558,7 +582,29 @@ public final class MainActivity extends Activity implements LocationListener {
                 formatMillimeters(gapMm)));
         windowView.setGap(gapMm);
 
+        double calculated = calculatedFlow();
+        calculatedFlowText.setText(String.format(
+                Locale.getDefault(),
+                "Flujo real calculado: %s mm·km/h",
+                formatFlow(calculated)));
+
         if (active) {
+            double requested = requestedFlow();
+            double difference = calculated - requested;
+            double differencePercent = requested > 0.0
+                    ? difference * 100.0 / requested
+                    : 0.0;
+
+            requestedFlowText.setText(String.format(
+                    Locale.getDefault(),
+                    "Flujo solicitado: %s mm·km/h",
+                    formatFlow(requested)));
+            flowDifferenceText.setText(String.format(
+                    Locale.getDefault(),
+                    "Diferencia: %s mm·km/h (%+.3f%%)",
+                    formatSignedFlow(difference),
+                    differencePercent));
+
             referenceText.setText(String.format(
                     Locale.getDefault(),
                     "Referencia: %s mm; velocidad medida %.1f km/h; cálculo %.1f km/h; objetivo %s mm",
@@ -567,6 +613,8 @@ public final class MainActivity extends Activity implements LocationListener {
                     referenceCalculationSpeedKmh,
                     formatMillimeters(targetGapMm)));
         } else {
+            requestedFlowText.setText("Flujo solicitado: sin referencia");
+            flowDifferenceText.setText("Diferencia: sin referencia");
             referenceText.setText("Referencia: ninguna");
         }
 
@@ -652,7 +700,6 @@ public final class MainActivity extends Activity implements LocationListener {
                     "Fuente: GPS; sin velocidad nueva, conservando %.1f km/h",
                     speedKmh));
         }
-
         refresh();
     }
 
@@ -661,7 +708,6 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!LocationManager.GPS_PROVIDER.equals(provider) || testMode) {
             return;
         }
-
         sourceText.setText(String.format(
                 Locale.getDefault(),
                 "GPS reactivado; conservando %.1f km/h hasta una lectura nueva",
@@ -675,7 +721,6 @@ public final class MainActivity extends Activity implements LocationListener {
         if (!LocationManager.GPS_PROVIDER.equals(provider)) {
             return;
         }
-
         sourceText.setText(String.format(
                 Locale.getDefault(),
                 "GPS desactivado; conservando %.1f km/h",
@@ -746,6 +791,34 @@ public final class MainActivity extends Activity implements LocationListener {
             return String.format(Locale.getDefault(), "%.9f", value);
         }
         return String.format(Locale.getDefault(), "%.6f", value);
+    }
+
+    private static String formatFlow(double value) {
+        if (!Double.isFinite(value)) {
+            return "no finito";
+        }
+        if (value == 0.0) {
+            return "0";
+        }
+        double magnitude = Math.abs(value);
+        if (magnitude < 1.0e-6 || magnitude >= 1.0e9) {
+            return String.format(Locale.getDefault(), "%.6e", value);
+        }
+        if (magnitude < 1.0) {
+            return String.format(Locale.getDefault(), "%.9f", value);
+        }
+        return String.format(Locale.getDefault(), "%.6f", value);
+    }
+
+    private static String formatSignedFlow(double value) {
+        String formatted = formatFlow(Math.abs(value));
+        if (value > 0.0) {
+            return "+" + formatted;
+        }
+        if (value < 0.0) {
+            return "−" + formatted;
+        }
+        return "0";
     }
 
     private static final class WindowView extends View {
