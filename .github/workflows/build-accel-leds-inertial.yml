@@ -5,17 +5,23 @@ on:
     paths:
       - 'accel-leds-inertial/**'
       - '.github/workflows/build-accel-leds-inertial.yml'
+      - '.github/scripts/apply_v42_battery_thermometer.py'
   pull_request:
     paths:
       - 'accel-leds-inertial/**'
       - '.github/workflows/build-accel-leds-inertial.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: agent/build-inertial-apk
 
       - uses: actions/setup-java@v4
         with:
@@ -26,11 +32,27 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Apply battery thermometer
+        run: python3 .github/scripts/apply_v42_battery_thermometer.py
+
       - name: Build debug APK
         run: gradle -p accel-leds-inertial assembleDebug --stacktrace
 
+      - name: Commit validated source changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            accel-leds-inertial/app/src/main/java/com/example/accelledsinertial/MainActivity.java \
+            accel-leds-inertial/app/build.gradle
+          if ! git diff --cached --quiet; then
+            git commit -m "Add battery thermometer [skip ci]"
+            git push origin HEAD:agent/build-inertial-apk
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: GPS-Aceleracion-Dominante-v4.1
+          name: GPS-Termometro-Bateria-v4.2-staging
           path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
