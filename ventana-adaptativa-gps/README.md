@@ -107,4 +107,4 @@ La cantidad de dígitos visibles puede variar entre lecturas: se eliminan única
 
 ## Velocímetro con siete decimales fijos — 2.5.3
 
-El velocímetro principal muestra siempre exactamente siete cifras después del separador decimal. Por ejemplo: `0.0000000 km/h`, `83.4000000 km/h` y `83.4720001 km/h`. El redondeo a siete decimales afecta únicamente a la presentación; el controlador continúa usando el valor `double` completo almacenado.
+El velocímetro principal muestra siempre exactamente siete cifras después del separador decimal. Por ejemplo: `0.0000000 km/h`, `83.4000000 km/h` y `83.4720001 km/h`. El redondeo a siete decimales afecta únicamente a la presentación; el controlador continúa usando el valor `double` completo almacenado. El separador decimal respeta la configuración regional del dispositivo.
