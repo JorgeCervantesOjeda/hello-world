@@ -26,18 +26,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Apply v2.9 GPS speedometer
-        run: python3 accel-leds-inertial/tools/apply_v29_gps.py
-
       - name: Build debug APK
         run: gradle -p accel-leds-inertial assembleDebug --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
           name: AccelLEDsInertial-v2.9-GPS
-          path: |
-            accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
-            accel-leds-inertial/app/src/main/java/com/example/accelledsinertial/MainActivity.java
-            accel-leds-inertial/app/build.gradle
-            accel-leds-inertial/app/src/main/AndroidManifest.xml
+          path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
