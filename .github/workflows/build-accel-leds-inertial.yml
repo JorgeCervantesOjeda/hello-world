@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'accel-leds-inertial/**'
+      - '.github/scripts/apply_v30_speed_decimals.py'
       - '.github/workflows/build-accel-leds-inertial.yml'
   pull_request:
     paths:
