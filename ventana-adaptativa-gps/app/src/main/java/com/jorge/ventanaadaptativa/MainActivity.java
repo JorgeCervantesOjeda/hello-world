@@ -68,7 +68,7 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private boolean enabled;
     private boolean testMode;
-    private boolean speedValid;
+    private boolean speedValid = true;
     private boolean manualMoving;
     private boolean active;
     private boolean pendingReference;
@@ -80,7 +80,7 @@ public final class MainActivity extends Activity implements LocationListener {
     private boolean openingTimeLearned;
     private boolean closingTimeLearned;
 
-    private double speedKmh;
+    private double speedKmh = 0.0;
     private double gapMm;
     private double referenceMeasuredSpeedKmh;
     private double referenceCalculationSpeedKmh;
@@ -152,7 +152,7 @@ public final class MainActivity extends Activity implements LocationListener {
         testModeSwitch.setTextSize(16);
         root.addView(testModeSwitch);
 
-        sourceText = text("Fuente: GPS; esperando velocidad válida", 14, Color.DKGRAY);
+        sourceText = text("Fuente: GPS; velocidad inicial 0.0 km/h", 14, Color.DKGRAY);
         root.addView(sourceText);
 
         speedText = text("— km/h", 30, Color.rgb(17, 87, 138));
@@ -196,7 +196,8 @@ public final class MainActivity extends Activity implements LocationListener {
                         + "Si esa velocidad es menor de 5 km/h, solo la velocidad de referencia "
                         + "se eleva a 5 km/h. Durante la regulación se usa siempre la velocidad real, "
                         + "aunque sea menor de 5 km/h. A 0 km/h el objetivo es la apertura máxima. "
-                        + "Una pérdida de GPS no se interpreta como velocidad cero.",
+                        + "Si una actualización GPS no incluye una velocidad válida, se conserva la anterior; "
+                        + "la velocidad inicial es 0 km/h. GPS desactivado no se interpreta como velocidad cero.",
                 14,
                 Color.DKGRAY);
         rules.setPadding(0, dp(10), 0, dp(20));
@@ -235,8 +236,8 @@ public final class MainActivity extends Activity implements LocationListener {
                     sourceText.setText("Fuente: velocidad de prueba");
                 } else {
                     speedKmh = 0.0;
-                    speedValid = false;
-                    sourceText.setText("Fuente: GPS; esperando velocidad válida");
+                    speedValid = true;
+                    sourceText.setText("Fuente: GPS; velocidad inicial 0.0 km/h");
                     startGps();
                 }
                 refresh();
@@ -682,17 +683,19 @@ public final class MainActivity extends Activity implements LocationListener {
             return;
         }
 
-        if (!location.hasSpeed()) {
-            speedValid = false;
-            cancelAutomaticMovement();
-            sourceText.setText("Fuente: GPS; velocidad no válida");
-            refresh();
-            return;
+        if (location.hasSpeed()
+                && Float.isFinite(location.getSpeed())
+                && location.getSpeed() >= 0.0f) {
+            speedKmh = location.getSpeed() * 3.6;
+            sourceText.setText("Fuente: GPS");
+        } else {
+            sourceText.setText(String.format(
+                    Locale.getDefault(),
+                    "Fuente: GPS; sin velocidad nueva, conservando %.1f km/h",
+                    speedKmh));
         }
 
-        speedKmh = Math.max(0.0, location.getSpeed() * 3.6);
         speedValid = true;
-        sourceText.setText("Fuente: GPS");
         refresh();
     }
 

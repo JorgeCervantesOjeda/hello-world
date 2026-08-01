@@ -39,6 +39,10 @@ apertura_objetivo = 50 × 5 / 2 = 125 mm
 
 Cualquier velocidad válida puede utilizarse durante la operación, aunque sea menor de 5 km/h.
 
+## Conservación de la velocidad GPS
+
+La velocidad utilizada por el control se inicializa en 0 km/h. Cada actualización GPS solo sustituye ese valor cuando incluye una velocidad válida. Si la ubicación no contiene velocidad, o el campo no es utilizable, se conserva la última velocidad conocida y la regulación continúa. GPS desactivado o permiso denegado siguen siendo fallos reales.
+
 ## Velocidad cero
 
 Una lectura válida de 0 km/h es un estado operativo válido. Como no puede dividirse entre cero, su objetivo es la apertura máxima de 450 mm.
