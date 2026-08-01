@@ -45,6 +45,12 @@ Una lectura válida de 0 km/h es un estado operativo válido. Como no puede divi
 
 Una lectura GPS ausente, inválida o desactivada no se interpreta como 0 km/h. En ese caso la regulación se suspende sin generar un objetivo nuevo.
 
+## Velocidad de movimiento de la ventana
+
+La versión 2.4.1 acelera la simulación de apertura y cierre automático de 8 a 15 mm por ciclo de 300 ms, aproximadamente 1.9 veces la velocidad anterior.
+
+El recorrido visual completo de 450 mm tarda inicialmente unos 9 segundos, en lugar de 17 segundos. Después se sustituye por los tiempos aprendidos de apertura y cierre.
+
 ## Aprendizaje del tiempo de recorrido
 
 La aplicación aprende por separado el tiempo equivalente del recorrido completo de apertura y de cierre.
@@ -68,8 +74,6 @@ tiempo_límite = tiempo_esperado × 1.4 + 0.3 segundos
 ```
 
 Si la ventana no alcanza el objetivo dentro del tiempo calculado, el movimiento se detiene y la regulación queda anulada hasta una nueva intervención del usuario.
-
-En el simulador el tiempo completo inicial es de 17 segundos, coherente con la velocidad visual del cristal. Se sustituye por los valores aprendidos cuando existen movimientos suficientes para medirlo.
 
 ## Límites
 
