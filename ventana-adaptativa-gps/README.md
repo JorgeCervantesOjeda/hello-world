@@ -21,13 +21,32 @@ apertura_objetivo = apertura_referencia × velocidad_referencia / velocidad_real
 
 - A 0 km/h, el objetivo es la apertura máxima de 450 mm.
 - Con cualquier velocidad positiva, el objetivo automático se mantiene estrictamente mayor que cero.
-- El límite de 25 mm fue eliminado.
-- El requisito manual de 30 mm fue eliminado: cualquier apertura positiva puede definir una referencia.
+- No existe un mínimo automático de 25 mm.
+- Cualquier apertura positiva puede definir una referencia.
 - Solo un cierre manual completo puede establecer 0 mm; ese cierre elimina la referencia e impide que el sistema vuelva a abrir la ventana por sí solo.
+
+## Indicadores de flujo
+
+La interfaz muestra continuamente dos magnitudes en unidades relativas `mm·km/h`:
+
+```text
+flujo_solicitado = apertura_referencia × velocidad_referencia_de_cálculo
+flujo_real_calculado = apertura_actual × velocidad_real
+```
+
+También muestra la diferencia absoluta y porcentual entre ambos valores. Mientras la ventana se mueve automáticamente, el flujo real calculado se aproxima al solicitado.
+
+A 0 km/h el flujo real calculado es cero incluso con la apertura máxima, porque el movimiento del vehículo no genera flujo en ese estado.
+
+Las unidades mostradas forman un índice proporcional y no un caudal volumétrico. Para mostrar m³/s se requiere calibrar:
+
+- el área real de la abertura;
+- la relación entre posición del cristal y área;
+- el coeficiente aerodinámico de la ventana.
 
 ## Control continuo sin enteros
 
-La apertura manual ya no utiliza un `SeekBar` entero. Se obtiene directamente de la posición táctil sobre la representación de la ventana y se conserva como `double`.
+La apertura manual no utiliza un `SeekBar` entero. Se obtiene directamente de la posición táctil sobre la representación de la ventana y se conserva como `double`.
 
 El recorrido, la referencia, el objetivo y los pasos automáticos no se convierten a `int`. La interfaz formatea los valores únicamente para mostrarlos, sin modificar el estado interno.
 
@@ -51,9 +70,10 @@ La aplicación aprende por separado los tiempos de apertura y cierre a partir de
 
 1. Activa el control adaptativo.
 2. Arrastra verticalmente el borde del cristal para elegir una apertura positiva.
-3. Al soltar, esa apertura y la velocidad almacenada definen la referencia.
-4. La ventana sigue el objetivo continuo conforme cambia la velocidad.
-5. Para cancelar la referencia, arrastra manualmente el cristal hasta 0 mm.
+3. Al soltar, esa apertura y la velocidad almacenada definen la referencia y el flujo solicitado.
+4. Observa el flujo real calculado, el solicitado y su diferencia.
+5. La ventana sigue el objetivo continuo conforme cambia la velocidad.
+6. Para cancelar la referencia, arrastra manualmente el cristal hasta 0 mm.
 
 ## Requisitos
 
