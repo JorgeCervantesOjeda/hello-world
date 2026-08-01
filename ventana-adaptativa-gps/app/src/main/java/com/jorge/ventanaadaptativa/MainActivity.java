@@ -197,7 +197,8 @@ public final class MainActivity extends Activity implements LocationListener {
                         + "se eleva a 5 km/h. Durante la regulación se usa siempre la velocidad real, "
                         + "aunque sea menor de 5 km/h. A 0 km/h el objetivo es la apertura máxima. "
                         + "Si una actualización GPS no incluye una velocidad válida, se conserva la anterior; "
-                        + "la velocidad inicial es 0 km/h. GPS desactivado no se interpreta como velocidad cero.",
+                        + "la velocidad inicial es 0 km/h. Si el GPS se desactiva o se reactiva, "
+                        + "se conserva la última velocidad conocida hasta recibir otra válida.",
                 14,
                 Color.DKGRAY);
         rules.setPadding(0, dp(10), 0, dp(20));
@@ -652,8 +653,12 @@ public final class MainActivity extends Activity implements LocationListener {
                     this);
             gpsRunning = true;
         } catch (RuntimeException error) {
-            speedValid = false;
-            setState("No se pudo iniciar el GPS. Usa el modo de prueba.");
+            speedValid = true;
+            sourceText.setText(String.format(
+                    Locale.getDefault(),
+                    "GPS no disponible; conservando %.1f km/h",
+                    speedKmh));
+            setState("GPS no disponible. El control continúa con la última velocidad conocida.");
         }
     }
 
@@ -671,8 +676,12 @@ public final class MainActivity extends Activity implements LocationListener {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
                 startGps();
             } else {
-                speedValid = false;
-                setState("Permiso GPS denegado. Usa el modo de prueba.");
+                speedValid = true;
+                sourceText.setText(String.format(
+                        Locale.getDefault(),
+                        "Permiso GPS denegado; conservando %.1f km/h",
+                        speedKmh));
+                setState("Sin permiso GPS. El control continúa con la última velocidad conocida.");
             }
         }
     }
@@ -701,14 +710,29 @@ public final class MainActivity extends Activity implements LocationListener {
 
     @Override
     public void onProviderEnabled(String provider) {
+        if (!LocationManager.GPS_PROVIDER.equals(provider) || testMode) {
+            return;
+        }
+        speedValid = true;
+        sourceText.setText(String.format(
+                Locale.getDefault(),
+                "GPS reactivado; conservando %.1f km/h hasta una lectura nueva",
+                speedKmh));
+        setState("GPS reactivado. Se conserva la última velocidad conocida.");
+        refresh();
     }
 
     @Override
     public void onProviderDisabled(String provider) {
-        speedValid = false;
-        cancelAutomaticMovement();
-        sourceText.setText("Fuente: GPS desactivado");
-        setState("GPS desactivado. Control suspendido sin interpretar la condición como 0 km/h.");
+        if (!LocationManager.GPS_PROVIDER.equals(provider)) {
+            return;
+        }
+        speedValid = true;
+        sourceText.setText(String.format(
+                Locale.getDefault(),
+                "GPS desactivado; conservando %.1f km/h",
+                speedKmh));
+        setState("GPS desactivado. El control continúa con la última velocidad conocida.");
         refresh();
     }
 

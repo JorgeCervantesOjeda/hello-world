@@ -43,6 +43,10 @@ Cualquier velocidad válida puede utilizarse durante la operación, aunque sea m
 
 La velocidad utilizada por el control se inicializa en 0 km/h. Cada actualización GPS solo sustituye ese valor cuando incluye una velocidad válida. Si la ubicación no contiene velocidad, o el campo no es utilizable, se conserva la última velocidad conocida y la regulación continúa. GPS desactivado o permiso denegado siguen siendo fallos reales.
 
+## Interrupciones del proveedor GPS
+
+La velocidad se inicializa en 0 km/h únicamente al arrancar la aplicación. Después de recibir velocidades reales, una actualización sin velocidad, la desactivación del proveedor GPS o su reactivación conservan la última velocidad conocida. El valor no vuelve a cero al reactivarse el proveedor; solo una nueva velocidad válida lo reemplaza.
+
 ## Velocidad cero
 
 Una lectura válida de 0 km/h es un estado operativo válido. Como no puede dividirse entre cero, su objetivo es la apertura máxima de 450 mm.
