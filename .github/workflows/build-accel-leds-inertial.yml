@@ -1,7 +1,7 @@
 name: Build GPS Velocidad y Aceleración
 
 on:
-  push:
+  pull_request:
     paths:
       - 'accel-leds-inertial/**'
       - '.github/workflows/build-accel-leds-inertial.yml'
@@ -34,7 +34,14 @@ jobs:
       - name: Build debug APK
         run: gradle -p accel-leds-inertial assembleDebug --stacktrace
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPS-Eje-Aceleracion-v4.3-staging
+          path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
       - name: Commit validated source changes
+        continue-on-error: true
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -47,9 +54,3 @@ jobs:
             git pull --rebase origin agent/build-inertial-apk
             git push origin HEAD:agent/build-inertial-apk
           fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: GPS-Eje-Aceleracion-v4.3-staging
-          path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
