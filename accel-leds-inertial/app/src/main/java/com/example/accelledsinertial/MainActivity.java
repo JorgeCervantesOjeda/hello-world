@@ -848,12 +848,20 @@ public final class MainActivity extends Activity implements LocationListener {
                     negative
                             ? new String[]{"−32.4", "−24.3", "−16.2", "−8.1", "0"}
                             : new String[]{"0", "+2.7", "+5.4", "+8.1", "+10.8"};
+            float[] tickValues =
+                    negative
+                            ? new float[]{-9.0f, -6.75f, -4.50f, -2.25f, 0f}
+                            : new float[]{0f, 0.75f, 1.50f, 2.25f, 3.0f};
 
             paint.setStrokeWidth(Math.max(1f, getHeight() * 0.0022f));
             paint.setColor(Color.WHITE);
             paint.setAlpha(95);
             for (int i = 0; i < tickLabels.length; i++) {
-                float x = left + (right - left) * i / (tickLabels.length - 1f);
+                float tickFraction = signedFillFraction(tickValues[i]);
+                float x =
+                        negative
+                                ? right - (right - left) * tickFraction
+                                : left + (right - left) * tickFraction;
                 canvas.drawLine(x, top, x, bottom, paint);
             }
             paint.setAlpha(255);
@@ -876,7 +884,11 @@ public final class MainActivity extends Activity implements LocationListener {
                             : Color.rgb(170, 255, 195));
 
             for (int i = 0; i < tickLabels.length; i++) {
-                float x = left + (right - left) * i / (tickLabels.length - 1f);
+                float tickFraction = signedFillFraction(tickValues[i]);
+                float x =
+                        negative
+                                ? right - (right - left) * tickFraction
+                                : left + (right - left) * tickFraction;
                 if (i == 0) {
                     paint.setTextAlign(Paint.Align.LEFT);
                 } else if (i == tickLabels.length - 1) {

@@ -7,10 +7,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.example.accelledsinertial.gpsonly.v43.axisunits'
+        applicationId 'com.example.accelledsinertial.gpsonly.v44.logaxis'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '4.3-gps-eje-km-h-seg'
+        versionName '4.4-gps-eje-logaritmico-corregido'
     }
 }
