@@ -424,12 +424,10 @@ public final class MainActivity extends Activity implements LocationListener {
         if (magnitude <= VISUAL_DEAD_ZONE) return 0f;
 
         float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
-        float adjustedMagnitude = magnitude - VISUAL_DEAD_ZONE;
-        float adjustedMaximum = maximum - VISUAL_DEAD_ZONE;
         float normalized =
                 (float)
-                        (Math.log1p(adjustedMagnitude / 0.15f)
-                                / Math.log1p(adjustedMaximum / 0.15f));
+                        (Math.log(magnitude / VISUAL_DEAD_ZONE)
+                                / Math.log(maximum / VISUAL_DEAD_ZONE));
         return clamp(normalized, 0f, 1f);
     }
 
