@@ -32,8 +32,7 @@ public final class MainActivity extends Activity implements LocationListener {
 
     private static final int REQ_LOCATION = 7;
 
-    private static final float GREEN_FULL_SCALE = 3.0f;
-    private static final float RED_FULL_SCALE = 9.0f;
+    private static final float ACCELERATION_FULL_SCALE = 9.0f;
     private static final float VISUAL_DEAD_ZONE = 0.015f;
     private static final float ACCELERATION_DISPLAY_FACTOR = 3.6f;
 
@@ -423,7 +422,7 @@ public final class MainActivity extends Activity implements LocationListener {
         float magnitude = Math.abs(value);
         if (magnitude <= VISUAL_DEAD_ZONE) return 0f;
 
-        float maximum = value >= 0f ? GREEN_FULL_SCALE : RED_FULL_SCALE;
+        float maximum = ACCELERATION_FULL_SCALE;
         float normalized =
                 (float)
                         (Math.log(magnitude / VISUAL_DEAD_ZONE)
@@ -845,13 +844,13 @@ public final class MainActivity extends Activity implements LocationListener {
             canvas.drawRect(left, top, right, bottom, paint);
 
             String[] greenTickLabels =
-                    new String[]{"0.25", "0.5", "1", "2", "4", "8", "10.8"};
+                    new String[]{"0.25", "0.5", "1", "2", "4", "8", "16", "32.4"};
             float[] greenTickDisplayValues =
-                    new float[]{0.25f, 0.5f, 1f, 2f, 4f, 8f, 10.8f};
+                    new float[]{0.25f, 0.5f, 1f, 2f, 4f, 8f, 16f, 32.4f};
             String[] redTickLabels =
-                    new String[]{"−32.4", "−16", "−8", "−4", "−2", "−1", "−0.5", "−0.25"};
+                    new String[]{"−0.25", "−0.5", "−1", "−2", "−4", "−8", "−16", "−32.4"};
             float[] redTickDisplayValues =
-                    new float[]{-32.4f, -16f, -8f, -4f, -2f, -1f, -0.5f, -0.25f};
+                    new float[]{-0.25f, -0.5f, -1f, -2f, -4f, -8f, -16f, -32.4f};
 
             float barWidth = right - left;
             paint.setAntiAlias(true);
@@ -874,7 +873,7 @@ public final class MainActivity extends Activity implements LocationListener {
             float[] redXs = new float[redTickLabels.length];
             for (int i = 0; i < redTickLabels.length; i++) {
                 float tickValue = redTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
-                redXs[i] = right - barWidth * signedFillFraction(tickValue);
+                redXs[i] = left + barWidth * signedFillFraction(tickValue);
             }
             drawNonOverlappingAxisLabels(
                     canvas,
@@ -890,8 +889,8 @@ public final class MainActivity extends Activity implements LocationListener {
 
             float pixels = barWidth * fraction;
             boolean negative = value < -VISUAL_DEAD_ZONE;
-            float activeLeft = negative ? right - pixels : left;
-            float activeRight = negative ? right : left + pixels;
+            float activeLeft = left;
+            float activeRight = left + pixels;
             int activeColor =
                     negative
                             ? Color.rgb(255, 35, 25)
@@ -904,7 +903,7 @@ public final class MainActivity extends Activity implements LocationListener {
             if (!Float.isNaN(uncertainty) && uncertainty > 0f) {
                 float magnitude = Math.abs(value);
                 float lowMagnitude = Math.max(VISUAL_DEAD_ZONE, magnitude - uncertainty);
-                float maximum = negative ? RED_FULL_SCALE : GREEN_FULL_SCALE;
+                float maximum = ACCELERATION_FULL_SCALE;
                 float highMagnitude = Math.min(maximum, magnitude + uncertainty);
                 float lowFraction =
                         lowMagnitude <= VISUAL_DEAD_ZONE
@@ -912,10 +911,8 @@ public final class MainActivity extends Activity implements LocationListener {
                                 : signedFillFraction(negative ? -lowMagnitude : lowMagnitude);
                 float highFraction =
                         signedFillFraction(negative ? -highMagnitude : highMagnitude);
-                float bandLeft =
-                        negative ? right - barWidth * highFraction : left + barWidth * lowFraction;
-                float bandRight =
-                        negative ? right - barWidth * lowFraction : left + barWidth * highFraction;
+                float bandLeft = left + barWidth * lowFraction;
+                float bandRight = left + barWidth * highFraction;
                 paint.setColor(Color.argb(105, 255, 215, 60));
                 canvas.drawRect(bandLeft, top, bandRight, bottom, paint);
             }
@@ -928,7 +925,7 @@ public final class MainActivity extends Activity implements LocationListener {
             for (float displayValue : activeTickDisplayValues) {
                 float tickValue = displayValue / ACCELERATION_DISPLAY_FACTOR;
                 float tickFraction = signedFillFraction(tickValue);
-                float x = negative ? right - barWidth * tickFraction : left + barWidth * tickFraction;
+                float x = left + barWidth * tickFraction;
                 boolean reached = Math.abs(displayValue) <= currentDisplayMagnitude + 0.0001f;
                 paint.setColor(reached ? Color.WHITE : Color.rgb(95, 100, 105));
                 paint.setAlpha(reached ? 180 : 105);
@@ -936,7 +933,7 @@ public final class MainActivity extends Activity implements LocationListener {
             }
             paint.setAlpha(255);
 
-            float edgeX = negative ? activeLeft : activeRight;
+            float edgeX = activeRight;
             float markerWidth = Math.max(2f, getWidth() * 0.0022f);
             paint.setColor(Color.WHITE);
             canvas.drawRect(
