@@ -689,8 +689,8 @@ public final class MainActivity extends Activity implements LocationListener {
             float barRight = right - (right - left) * 0.025f;
             float barTop = top + panelHeight * 0.475f;
             float barBottom = top + panelHeight * 0.805f;
-            float greenAxisLabelY = barTop - height * 0.010f;
-            float redAxisLabelY = top + panelHeight * 0.885f;
+            float greenAxisLabelY = barTop - height * 0.018f;
+            float redAxisLabelY = top + panelHeight * 0.900f;
             drawAccelerationBar(
                     canvas,
                     barLeft,
@@ -699,12 +699,28 @@ public final class MainActivity extends Activity implements LocationListener {
                     barBottom,
                     greenAxisLabelY,
                     redAxisLabelY,
-                    fresh ? gpsAccelerationFiltered : 0f);
+                    fresh ? gpsAccelerationFiltered : 0f,
+                    fresh ? gpsAccelerationUncertainty : Float.NaN);
 
-            String status = fresh ? accelerationQualityText() : "SIN ESTIMACIÓN VÁLIDA";
+            boolean uncertainSignal =
+                    fresh
+                            && !Float.isNaN(gpsAccelerationUncertainty)
+                            && Math.abs(gpsAccelerationFiltered)
+                                    <= gpsAccelerationUncertainty;
+            String status =
+                    !fresh
+                            ? "SIN ESTIMACIÓN VÁLIDA"
+                            : uncertainSignal
+                                    ? "SEÑAL INCIERTA"
+                                    : accelerationQualityText();
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setTextSize(height * 0.022f);
-            paint.setColor(fresh ? accelerationQualityColor() : Color.rgb(255, 190, 70));
+            paint.setColor(
+                    !fresh
+                            ? Color.rgb(255, 190, 70)
+                            : uncertainSignal
+                                    ? Color.rgb(255, 190, 70)
+                                    : accelerationQualityColor());
             canvas.drawText(
                     status + " · zona neutra ±0.054 km/(h·s)",
                     (left + right) / 2f,
@@ -823,7 +839,8 @@ public final class MainActivity extends Activity implements LocationListener {
                 float bottom,
                 float greenAxisLabelY,
                 float redAxisLabelY,
-                float value) {
+                float value,
+                float uncertainty) {
             paint.setStyle(Paint.Style.FILL);
             paint.setAntiAlias(false);
             paint.setColor(Color.rgb(24, 24, 24));
@@ -842,33 +859,33 @@ public final class MainActivity extends Activity implements LocationListener {
             paint.setAntiAlias(true);
             paint.setTextSize(getHeight() * 0.0175f);
 
-            paint.setColor(Color.rgb(170, 255, 195));
+            float[] greenXs = new float[greenTickLabels.length];
             for (int i = 0; i < greenTickLabels.length; i++) {
                 float tickValue = greenTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
-                float x = left + barWidth * signedFillFraction(tickValue);
-                if (x <= left + barWidth * 0.025f) {
-                    paint.setTextAlign(Paint.Align.LEFT);
-                } else if (x >= right - barWidth * 0.025f) {
-                    paint.setTextAlign(Paint.Align.RIGHT);
-                } else {
-                    paint.setTextAlign(Paint.Align.CENTER);
-                }
-                canvas.drawText(greenTickLabels[i], x, greenAxisLabelY, paint);
+                greenXs[i] = left + barWidth * signedFillFraction(tickValue);
             }
+            drawNonOverlappingAxisLabels(
+                    canvas,
+                    greenTickLabels,
+                    greenXs,
+                    greenAxisLabelY,
+                    left,
+                    right,
+                    Color.rgb(170, 255, 195));
 
-            paint.setColor(Color.rgb(255, 175, 170));
+            float[] redXs = new float[redTickLabels.length];
             for (int i = 0; i < redTickLabels.length; i++) {
                 float tickValue = redTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
-                float x = right - barWidth * signedFillFraction(tickValue);
-                if (x <= left + barWidth * 0.025f) {
-                    paint.setTextAlign(Paint.Align.LEFT);
-                } else if (x >= right - barWidth * 0.025f) {
-                    paint.setTextAlign(Paint.Align.RIGHT);
-                } else {
-                    paint.setTextAlign(Paint.Align.CENTER);
-                }
-                canvas.drawText(redTickLabels[i], x, redAxisLabelY, paint);
+                redXs[i] = right - barWidth * signedFillFraction(tickValue);
             }
+            drawNonOverlappingAxisLabels(
+                    canvas,
+                    redTickLabels,
+                    redXs,
+                    redAxisLabelY,
+                    left,
+                    right,
+                    Color.rgb(255, 175, 170));
 
             float fraction = signedFillFraction(value);
             if (fraction <= 0f) return;
@@ -886,15 +903,37 @@ public final class MainActivity extends Activity implements LocationListener {
             paint.setColor(activeColor);
             canvas.drawRect(activeLeft, top, activeRight, bottom, paint);
 
+            if (!Float.isNaN(uncertainty) && uncertainty > 0f) {
+                float magnitude = Math.abs(value);
+                float lowMagnitude = Math.max(VISUAL_DEAD_ZONE, magnitude - uncertainty);
+                float maximum = negative ? RED_FULL_SCALE : GREEN_FULL_SCALE;
+                float highMagnitude = Math.min(maximum, magnitude + uncertainty);
+                float lowFraction =
+                        lowMagnitude <= VISUAL_DEAD_ZONE
+                                ? 0f
+                                : signedFillFraction(negative ? -lowMagnitude : lowMagnitude);
+                float highFraction =
+                        signedFillFraction(negative ? -highMagnitude : highMagnitude);
+                float bandLeft =
+                        negative ? right - barWidth * highFraction : left + barWidth * lowFraction;
+                float bandRight =
+                        negative ? right - barWidth * lowFraction : left + barWidth * highFraction;
+                paint.setColor(Color.argb(105, 255, 215, 60));
+                canvas.drawRect(bandLeft, top, bandRight, bottom, paint);
+            }
+
             float[] activeTickDisplayValues =
                     negative ? redTickDisplayValues : greenTickDisplayValues;
+            float currentDisplayMagnitude =
+                    Math.abs(value * ACCELERATION_DISPLAY_FACTOR);
             paint.setStrokeWidth(Math.max(1f, getHeight() * 0.0022f));
-            paint.setColor(Color.WHITE);
-            paint.setAlpha(95);
             for (float displayValue : activeTickDisplayValues) {
                 float tickValue = displayValue / ACCELERATION_DISPLAY_FACTOR;
                 float tickFraction = signedFillFraction(tickValue);
                 float x = negative ? right - barWidth * tickFraction : left + barWidth * tickFraction;
+                boolean reached = Math.abs(displayValue) <= currentDisplayMagnitude + 0.0001f;
+                paint.setColor(reached ? Color.WHITE : Color.rgb(95, 100, 105));
+                paint.setAlpha(reached ? 180 : 105);
                 canvas.drawLine(x, top, x, bottom, paint);
             }
             paint.setAlpha(255);
@@ -946,6 +985,53 @@ public final class MainActivity extends Activity implements LocationListener {
                     (labelTop + labelBottom) / 2f
                             - (metrics.ascent + metrics.descent) / 2f;
             canvas.drawText(currentText, labelCenterX, textY, paint);
+        }
+
+        private void drawNonOverlappingAxisLabels(
+                Canvas canvas,
+                String[] labels,
+                float[] positions,
+                float baseline,
+                float left,
+                float right,
+                int color) {
+            if (labels.length == 0) return;
+
+            float gap = Math.max(3f, getWidth() * 0.006f);
+            float lastLabelLeft =
+                    right - paint.measureText(labels[labels.length - 1]);
+            float previousRight = left - gap;
+            paint.setColor(color);
+
+            for (int i = 0; i < labels.length; i++) {
+                float textWidth = paint.measureText(labels[i]);
+                float x = clamp(positions[i], left, right);
+                float textLeft;
+                float textRight;
+
+                if (i == 0 || x <= left + (right - left) * 0.025f) {
+                    paint.setTextAlign(Paint.Align.LEFT);
+                    textLeft = x;
+                    textRight = x + textWidth;
+                } else if (i == labels.length - 1 || x >= right - (right - left) * 0.025f) {
+                    paint.setTextAlign(Paint.Align.RIGHT);
+                    textLeft = x - textWidth;
+                    textRight = x;
+                } else {
+                    paint.setTextAlign(Paint.Align.CENTER);
+                    textLeft = x - textWidth / 2f;
+                    textRight = x + textWidth / 2f;
+                }
+
+                boolean endpoint = i == 0 || i == labels.length - 1;
+                boolean fitsPrevious = textLeft >= previousRight + gap;
+                boolean leavesLast =
+                        i >= labels.length - 2 || textRight <= lastLabelLeft - gap;
+                if (endpoint || (fitsPrevious && leavesLast)) {
+                    canvas.drawText(labels[i], x, baseline, paint);
+                    previousRight = textRight;
+                }
+            }
         }
 
         private String accelerationQualityText() {
