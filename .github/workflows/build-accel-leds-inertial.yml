@@ -1,23 +1,21 @@
 name: Build GPS Velocidad y Aceleración
 
 on:
+  push:
+    paths:
+      - 'accel-leds-inertial/**'
+      - '.github/workflows/build-accel-leds-inertial.yml'
   pull_request:
     paths:
       - 'accel-leds-inertial/**'
       - '.github/workflows/build-accel-leds-inertial.yml'
-      - '.github/scripts/apply_v44_log_axis.py'
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: agent/build-inertial-apk
 
       - uses: actions/setup-java@v4
         with:
@@ -28,27 +26,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Apply corrected logarithmic axis
-        run: python3 .github/scripts/apply_v44_log_axis.py
-
       - name: Build debug APK
         run: gradle -p accel-leds-inertial assembleDebug --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GPS-Eje-Logaritmico-v4.4-staging
+          name: GPS-Eje-Logaritmico-v4.4
           path: accel-leds-inertial/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-
-      - name: Commit validated source changes
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            accel-leds-inertial/app/src/main/java/com/example/accelledsinertial/MainActivity.java \
-            accel-leds-inertial/app/build.gradle
-          if ! git diff --cached --quiet; then
-            git commit -m "Correct logarithmic axis marks [skip ci]"
-            git push origin HEAD:agent/build-inertial-apk
-          fi
