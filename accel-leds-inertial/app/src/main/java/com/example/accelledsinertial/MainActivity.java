@@ -689,14 +689,16 @@ public final class MainActivity extends Activity implements LocationListener {
             float barRight = right - (right - left) * 0.025f;
             float barTop = top + panelHeight * 0.475f;
             float barBottom = top + panelHeight * 0.805f;
-            float axisLabelY = top + panelHeight * 0.885f;
+            float greenAxisLabelY = barTop - height * 0.010f;
+            float redAxisLabelY = top + panelHeight * 0.885f;
             drawAccelerationBar(
                     canvas,
                     barLeft,
                     barRight,
                     barTop,
                     barBottom,
-                    axisLabelY,
+                    greenAxisLabelY,
+                    redAxisLabelY,
                     fresh ? gpsAccelerationFiltered : 0f);
 
             String status = fresh ? accelerationQualityText() : "SIN ESTIMACIÓN VÁLIDA";
@@ -819,20 +821,59 @@ public final class MainActivity extends Activity implements LocationListener {
                 float right,
                 float top,
                 float bottom,
-                float axisLabelY,
+                float greenAxisLabelY,
+                float redAxisLabelY,
                 float value) {
-            paint.setAntiAlias(false);
             paint.setStyle(Paint.Style.FILL);
+            paint.setAntiAlias(false);
             paint.setColor(Color.rgb(24, 24, 24));
             canvas.drawRect(left, top, right, bottom, paint);
 
-            float fraction = signedFillFraction(value);
-            if (fraction <= 0f) {
-                paint.setAntiAlias(true);
-                return;
+            String[] greenTickLabels =
+                    new String[]{"0.25", "0.5", "1", "2", "4", "8", "10.8"};
+            float[] greenTickDisplayValues =
+                    new float[]{0.25f, 0.5f, 1f, 2f, 4f, 8f, 10.8f};
+            String[] redTickLabels =
+                    new String[]{"−32.4", "−16", "−8", "−4", "−2", "−1", "−0.5", "−0.25"};
+            float[] redTickDisplayValues =
+                    new float[]{-32.4f, -16f, -8f, -4f, -2f, -1f, -0.5f, -0.25f};
+
+            float barWidth = right - left;
+            paint.setAntiAlias(true);
+            paint.setTextSize(getHeight() * 0.0175f);
+
+            paint.setColor(Color.rgb(170, 255, 195));
+            for (int i = 0; i < greenTickLabels.length; i++) {
+                float tickValue = greenTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
+                float x = left + barWidth * signedFillFraction(tickValue);
+                if (x <= left + barWidth * 0.025f) {
+                    paint.setTextAlign(Paint.Align.LEFT);
+                } else if (x >= right - barWidth * 0.025f) {
+                    paint.setTextAlign(Paint.Align.RIGHT);
+                } else {
+                    paint.setTextAlign(Paint.Align.CENTER);
+                }
+                canvas.drawText(greenTickLabels[i], x, greenAxisLabelY, paint);
             }
 
-            float pixels = (right - left) * fraction;
+            paint.setColor(Color.rgb(255, 175, 170));
+            for (int i = 0; i < redTickLabels.length; i++) {
+                float tickValue = redTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
+                float x = right - barWidth * signedFillFraction(tickValue);
+                if (x <= left + barWidth * 0.025f) {
+                    paint.setTextAlign(Paint.Align.LEFT);
+                } else if (x >= right - barWidth * 0.025f) {
+                    paint.setTextAlign(Paint.Align.RIGHT);
+                } else {
+                    paint.setTextAlign(Paint.Align.CENTER);
+                }
+                canvas.drawText(redTickLabels[i], x, redAxisLabelY, paint);
+            }
+
+            float fraction = signedFillFraction(value);
+            if (fraction <= 0f) return;
+
+            float pixels = barWidth * fraction;
             boolean negative = value < -VISUAL_DEAD_ZONE;
             float activeLeft = negative ? right - pixels : left;
             float activeRight = negative ? right : left + pixels;
@@ -841,27 +882,19 @@ public final class MainActivity extends Activity implements LocationListener {
                             ? Color.rgb(255, 35, 25)
                             : Color.rgb(0, 255, 70);
 
+            paint.setAntiAlias(false);
             paint.setColor(activeColor);
             canvas.drawRect(activeLeft, top, activeRight, bottom, paint);
 
-            String[] tickLabels =
-                    negative
-                            ? new String[]{"−32.4", "−24.3", "−16.2", "−8.1", "0"}
-                            : new String[]{"0", "+2.7", "+5.4", "+8.1", "+10.8"};
-            float[] tickValues =
-                    negative
-                            ? new float[]{-9.0f, -6.75f, -4.50f, -2.25f, 0f}
-                            : new float[]{0f, 0.75f, 1.50f, 2.25f, 3.0f};
-
+            float[] activeTickDisplayValues =
+                    negative ? redTickDisplayValues : greenTickDisplayValues;
             paint.setStrokeWidth(Math.max(1f, getHeight() * 0.0022f));
             paint.setColor(Color.WHITE);
             paint.setAlpha(95);
-            for (int i = 0; i < tickLabels.length; i++) {
-                float tickFraction = signedFillFraction(tickValues[i]);
-                float x =
-                        negative
-                                ? right - (right - left) * tickFraction
-                                : left + (right - left) * tickFraction;
+            for (float displayValue : activeTickDisplayValues) {
+                float tickValue = displayValue / ACCELERATION_DISPLAY_FACTOR;
+                float tickFraction = signedFillFraction(tickValue);
+                float x = negative ? right - barWidth * tickFraction : left + barWidth * tickFraction;
                 canvas.drawLine(x, top, x, bottom, paint);
             }
             paint.setAlpha(255);
@@ -877,28 +910,6 @@ public final class MainActivity extends Activity implements LocationListener {
                     paint);
 
             paint.setAntiAlias(true);
-            paint.setTextSize(getHeight() * 0.019f);
-            paint.setColor(
-                    negative
-                            ? Color.rgb(255, 175, 170)
-                            : Color.rgb(170, 255, 195));
-
-            for (int i = 0; i < tickLabels.length; i++) {
-                float tickFraction = signedFillFraction(tickValues[i]);
-                float x =
-                        negative
-                                ? right - (right - left) * tickFraction
-                                : left + (right - left) * tickFraction;
-                if (i == 0) {
-                    paint.setTextAlign(Paint.Align.LEFT);
-                } else if (i == tickLabels.length - 1) {
-                    paint.setTextAlign(Paint.Align.RIGHT);
-                } else {
-                    paint.setTextAlign(Paint.Align.CENTER);
-                }
-                canvas.drawText(tickLabels[i], x, axisLabelY, paint);
-            }
-
             String currentText =
                     String.format(
                             Locale.US,
