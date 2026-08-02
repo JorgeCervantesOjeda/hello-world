@@ -7,10 +7,10 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.example.accelledsinertial.gpsonly.v42.batterythermometer'
+        applicationId 'com.example.accelledsinertial.gpsonly.v43.axisunits'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '4.2-gps-termometro-bateria'
+        versionName '4.3-gps-eje-km-h-seg'
     }
 }
