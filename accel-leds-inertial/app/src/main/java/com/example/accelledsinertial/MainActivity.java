@@ -15,6 +15,8 @@ import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -43,11 +45,54 @@ public final class MainActivity extends Activity implements LocationListener {
     private static final float GPS_MIN_INTERVAL_S = 0.12f;
     private static final float GPS_MAX_INTERVAL_S = 3.0f;
 
+    private static final float TEMPERATURE_HYSTERESIS_C = 0.2f;
+    private static final int TEMPERATURE_DROP_TONE_MS = 180;
+    private static final long TEMPERATURE_DROP_TONE_GAP_MS = 120L;
+
     private LocationManager locationManager;
     private GpsView view;
 
     private float batteryTemperatureC = Float.NaN;
     private boolean batteryReceiverRegistered;
+
+    private final TemperatureDropTracker temperatureDropTracker =
+            new TemperatureDropTracker(TEMPERATURE_HYSTERESIS_C);
+    private final Handler temperatureToneHandler =
+            new Handler(Looper.getMainLooper());
+    private ToneGenerator temperatureToneGenerator;
+    private int pendingTemperatureDropTones;
+    private boolean temperatureDropToneRunning;
+
+    private final Runnable temperatureDropToneRunnable =
+            new Runnable() {
+                @Override
+                public void run() {
+                    if (pendingTemperatureDropTones <= 0) {
+                        temperatureDropToneRunning = false;
+                        return;
+                    }
+
+                    ToneGenerator generator = ensureTemperatureToneGenerator();
+                    if (generator == null) {
+                        pendingTemperatureDropTones = 0;
+                        temperatureDropToneRunning = false;
+                        return;
+                    }
+
+                    pendingTemperatureDropTones--;
+                    try {
+                        generator.startTone(
+                                ToneGenerator.TONE_DTMF_0,
+                                TEMPERATURE_DROP_TONE_MS);
+                    } catch (RuntimeException ignored) {
+                    }
+
+                    temperatureToneHandler.postDelayed(
+                            this,
+                            TEMPERATURE_DROP_TONE_MS
+                                    + TEMPERATURE_DROP_TONE_GAP_MS);
+                }
+            };
 
     private float gpsSpeed;
     private float gpsSpeedAccuracy = Float.NaN;
@@ -146,6 +191,12 @@ public final class MainActivity extends Activity implements LocationListener {
         super.onPause();
     }
 
+    @Override
+    protected void onDestroy() {
+        releaseTemperatureToneGenerator();
+        super.onDestroy();
+    }
+
     private void startBatteryTemperature() {
         if (batteryReceiverRegistered) return;
 
@@ -180,19 +231,59 @@ public final class MainActivity extends Activity implements LocationListener {
     }
 
     private void updateBatteryTemperature(Intent intent) {
-        if (intent == null || !intent.hasExtra(BatteryManager.EXTRA_TEMPERATURE)) {
-            batteryTemperatureC = Float.NaN;
-        } else {
+        float newTemperatureC = Float.NaN;
+        if (intent != null && intent.hasExtra(BatteryManager.EXTRA_TEMPERATURE)) {
             int tenthsCelsius =
                     intent.getIntExtra(
                             BatteryManager.EXTRA_TEMPERATURE,
                             Integer.MIN_VALUE);
-            batteryTemperatureC =
-                    tenthsCelsius == Integer.MIN_VALUE
-                            ? Float.NaN
-                            : tenthsCelsius / 10f;
+            if (tenthsCelsius != Integer.MIN_VALUE) {
+                newTemperatureC = tenthsCelsius / 10f;
+            }
+        }
+
+        batteryTemperatureC = newTemperatureC;
+        if (!Float.isNaN(batteryTemperatureC)) {
+            enqueueTemperatureDropTones(
+                    temperatureDropTracker.update(batteryTemperatureC));
         }
         invalidateView();
+    }
+
+    private void enqueueTemperatureDropTones(int count) {
+        if (count <= 0) return;
+
+        pendingTemperatureDropTones += count;
+        if (temperatureDropToneRunning) return;
+
+        temperatureDropToneRunning = true;
+        temperatureToneHandler.post(temperatureDropToneRunnable);
+    }
+
+    private ToneGenerator ensureTemperatureToneGenerator() {
+        if (temperatureToneGenerator != null) return temperatureToneGenerator;
+
+        try {
+            temperatureToneGenerator =
+                    new ToneGenerator(AudioManager.STREAM_ALARM, 100);
+        } catch (RuntimeException ignored) {
+            temperatureToneGenerator = null;
+        }
+        return temperatureToneGenerator;
+    }
+
+    private void releaseTemperatureToneGenerator() {
+        temperatureToneHandler.removeCallbacks(temperatureDropToneRunnable);
+        pendingTemperatureDropTones = 0;
+        temperatureDropToneRunning = false;
+
+        if (temperatureToneGenerator == null) return;
+        try {
+            temperatureToneGenerator.stopTone();
+            temperatureToneGenerator.release();
+        } catch (RuntimeException ignored) {
+        }
+        temperatureToneGenerator = null;
     }
 
     private void hideUi() {
