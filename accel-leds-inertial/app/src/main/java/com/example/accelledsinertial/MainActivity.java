@@ -2,22 +2,26 @@ package com.example.accelledsinertial;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.SharedPreferences;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
+import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
@@ -26,286 +30,1123 @@ import android.view.WindowManager;
 
 import java.util.Locale;
 
-public final class MainActivity extends Activity implements SensorEventListener, LocationListener {
+public final class MainActivity extends Activity implements LocationListener {
+
     private static final int REQ_LOCATION = 7;
-    private static final float LPF_TAU_S = 0.12f;
-    private static final float DEAD_ZONE = 0.09f;
 
-    private SensorManager sensorManager;
-    private Sensor motionSensor;
-    private boolean nativeLinearSensor;
+    private static final float ACCELERATION_FULL_SCALE = 9.0f;
+    private static final float VISUAL_DEAD_ZONE = 0.015f;
+    private static final float ACCELERATION_DISPLAY_FACTOR = 3.6f;
+
+    private static final long GPS_SPEED_STALE_MS = 2500L;
+    private static final long GPS_ACCELERATION_STALE_MS = 3000L;
+    private static final float GPS_ACCELERATION_TAU_S = 0.70f;
+    private static final float GPS_ACCELERATION_MAX_ABS = 12.0f;
+    private static final float GPS_MIN_INTERVAL_S = 0.12f;
+    private static final float GPS_MAX_INTERVAL_S = 3.0f;
+
+    private static final float TEMPERATURE_HYSTERESIS_C = 0.2f;
+    private static final int TEMPERATURE_DROP_TONE_MS = 180;
+    private static final long TEMPERATURE_DROP_TONE_GAP_MS = 120L;
+
     private LocationManager locationManager;
-    private LedView view;
-    private SharedPreferences prefs;
+    private GpsView view;
 
-    private final float[] gravity = new float[3];
-    private final float[] filtered = new float[3];
-    private final float[] axis = new float[]{1f, 0f, 0f};
-    private float zeroBias;
-    private long lastSensorNs;
-    private float longitudinal;
+    private float batteryTemperatureC = Float.NaN;
+    private boolean batteryReceiverRegistered;
+
+    private final TemperatureDropTracker temperatureDropTracker =
+            new TemperatureDropTracker(TEMPERATURE_HYSTERESIS_C);
+    private final Handler temperatureToneHandler =
+            new Handler(Looper.getMainLooper());
+    private ToneGenerator temperatureToneGenerator;
+    private int pendingTemperatureDropTones;
+    private boolean temperatureDropToneRunning;
+
+    private final Runnable temperatureDropToneRunnable =
+            new Runnable() {
+                @Override
+                public void run() {
+                    if (pendingTemperatureDropTones <= 0) {
+                        temperatureDropToneRunning = false;
+                        return;
+                    }
+
+                    ToneGenerator generator = ensureTemperatureToneGenerator();
+                    if (generator == null) {
+                        pendingTemperatureDropTones = 0;
+                        temperatureDropToneRunning = false;
+                        return;
+                    }
+
+                    pendingTemperatureDropTones--;
+                    try {
+                        generator.startTone(
+                                ToneGenerator.TONE_DTMF_0,
+                                TEMPERATURE_DROP_TONE_MS);
+                    } catch (RuntimeException ignored) {
+                    }
+
+                    temperatureToneHandler.postDelayed(
+                            this,
+                            TEMPERATURE_DROP_TONE_MS
+                                    + TEMPERATURE_DROP_TONE_GAP_MS);
+                }
+            };
+
     private float gpsSpeed;
-    private float gpsAccuracy = Float.NaN;
+    private float gpsSpeedAccuracy = Float.NaN;
+    private float gpsHorizontalAccuracy = Float.NaN;
     private long lastGpsMs;
+
+    private float gpsAccelerationRaw = Float.NaN;
+    private float gpsAccelerationFiltered;
+    private float gpsAccelerationUncertainty = Float.NaN;
+    private float gpsAccelerationQuality;
+    private float gpsUpdateHz;
+    private float gpsLastIntervalS;
+    private float gpsPositionConsistencyError = Float.NaN;
+    private long lastGpsAccelerationMs;
+    private boolean gpsAccelerationValid;
+
+    private long previousGpsTimeMs;
+    private float previousGpsSpeed;
+    private float previousGpsSpeedAccuracy = Float.NaN;
+    private float previousGpsHorizontalAccuracy = Float.NaN;
+    private Location previousGpsLocation;
+
+    private int gnssSatellitesVisible;
+    private int gnssSatellitesUsed;
+    private boolean gnssStarted;
+    private boolean gnssCallbackRegistered;
     private boolean showInfo = true;
-    private boolean calibrated;
 
-    private int calibrationState; // 0 idle, 1 countdown, 2 collecting
-    private long calibrationStartMs;
-    private int calibrationSamples;
-    private final double[][] covariance = new double[3][3];
-    private final double[] calibrationMean = new double[3];
-    private String message = "Fija el teléfono y pulsa CALIBRAR";
+    private final BroadcastReceiver batteryReceiver =
+            new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    updateBatteryTemperature(intent);
+                }
+            };
 
-    @Override protected void onCreate(Bundle state) {
+    private final GnssStatus.Callback gnssStatusCallback =
+            new GnssStatus.Callback() {
+                @Override
+                public void onStarted() {
+                    gnssStarted = true;
+                    invalidateView();
+                }
+
+                @Override
+                public void onStopped() {
+                    gnssStarted = false;
+                    gnssSatellitesVisible = 0;
+                    gnssSatellitesUsed = 0;
+                    gpsAccelerationValid = false;
+                    invalidateView();
+                }
+
+                @Override
+                public void onSatelliteStatusChanged(GnssStatus status) {
+                    gnssStarted = true;
+                    gnssSatellitesVisible = status.getSatelliteCount();
+                    int used = 0;
+                    for (int i = 0; i < gnssSatellitesVisible; i++) {
+                        if (status.usedInFix(i)) used++;
+                    }
+                    gnssSatellitesUsed = used;
+                    invalidateView();
+                }
+            };
+
+    @Override
+    protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        WindowManager.LayoutParams p = getWindow().getAttributes();
-        p.screenBrightness = 1f;
-        getWindow().setAttributes(p);
+
+        WindowManager.LayoutParams params = getWindow().getAttributes();
+        params.screenBrightness = 1f;
+        getWindow().setAttributes(params);
         hideUi();
 
-        prefs = getSharedPreferences("calibration", MODE_PRIVATE);
-        calibrated = prefs.getBoolean("valid", false);
-        if (calibrated) {
-            axis[0] = prefs.getFloat("x", 1f);
-            axis[1] = prefs.getFloat("y", 0f);
-            axis[2] = prefs.getFloat("z", 0f);
-            zeroBias = prefs.getFloat("bias", 0f);
-            message = "Calibración cargada";
-        }
-
-        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-        motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-        nativeLinearSensor = motionSensor != null;
-        if (motionSensor == null) motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        view = new LedView(this);
+        view = new GpsView(this);
         setContentView(view);
         startLocation();
     }
 
-    @Override protected void onResume() {
+    @Override
+    protected void onResume() {
         super.onResume();
         hideUi();
-        if (motionSensor != null) sensorManager.registerListener(this, motionSensor, SensorManager.SENSOR_DELAY_GAME);
+        startBatteryTemperature();
         startLocation();
     }
 
-    @Override protected void onPause() {
-        sensorManager.unregisterListener(this);
+    @Override
+    protected void onPause() {
         stopLocation();
+        stopBatteryTemperature();
         super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        releaseTemperatureToneGenerator();
+        super.onDestroy();
+    }
+
+    private void startBatteryTemperature() {
+        if (batteryReceiverRegistered) return;
+
+        try {
+            IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent currentBattery;
+            if (Build.VERSION.SDK_INT >= 33) {
+                currentBattery =
+                        registerReceiver(
+                                batteryReceiver,
+                                filter,
+                                Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                currentBattery = registerReceiver(batteryReceiver, filter);
+            }
+            batteryReceiverRegistered = true;
+            updateBatteryTemperature(currentBattery);
+        } catch (Exception ignored) {
+            batteryReceiverRegistered = false;
+            batteryTemperatureC = Float.NaN;
+        }
+    }
+
+    private void stopBatteryTemperature() {
+        if (!batteryReceiverRegistered) return;
+
+        try {
+            unregisterReceiver(batteryReceiver);
+        } catch (Exception ignored) {
+        }
+        batteryReceiverRegistered = false;
+    }
+
+    private void updateBatteryTemperature(Intent intent) {
+        float newTemperatureC = Float.NaN;
+        if (intent != null && intent.hasExtra(BatteryManager.EXTRA_TEMPERATURE)) {
+            int tenthsCelsius =
+                    intent.getIntExtra(
+                            BatteryManager.EXTRA_TEMPERATURE,
+                            Integer.MIN_VALUE);
+            if (tenthsCelsius != Integer.MIN_VALUE) {
+                newTemperatureC = tenthsCelsius / 10f;
+            }
+        }
+
+        batteryTemperatureC = newTemperatureC;
+        if (!Float.isNaN(batteryTemperatureC)) {
+            enqueueTemperatureDropTones(
+                    temperatureDropTracker.update(batteryTemperatureC));
+        }
+        invalidateView();
+    }
+
+    private void enqueueTemperatureDropTones(int count) {
+        if (count <= 0) return;
+
+        pendingTemperatureDropTones += count;
+        if (temperatureDropToneRunning) return;
+
+        temperatureDropToneRunning = true;
+        temperatureToneHandler.post(temperatureDropToneRunnable);
+    }
+
+    private ToneGenerator ensureTemperatureToneGenerator() {
+        if (temperatureToneGenerator != null) return temperatureToneGenerator;
+
+        try {
+            temperatureToneGenerator =
+                    new ToneGenerator(AudioManager.STREAM_ALARM, 100);
+        } catch (RuntimeException ignored) {
+            temperatureToneGenerator = null;
+        }
+        return temperatureToneGenerator;
+    }
+
+    private void releaseTemperatureToneGenerator() {
+        temperatureToneHandler.removeCallbacks(temperatureDropToneRunnable);
+        pendingTemperatureDropTones = 0;
+        temperatureDropToneRunning = false;
+
+        if (temperatureToneGenerator == null) return;
+        try {
+            temperatureToneGenerator.stopTone();
+            temperatureToneGenerator.release();
+        } catch (RuntimeException ignored) {
+        }
+        temperatureToneGenerator = null;
     }
 
     private void hideUi() {
         getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }
 
     private void startLocation() {
         if (locationManager == null) return;
-        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOCATION);
+
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    REQ_LOCATION);
             return;
         }
+
         try {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this);
-        } catch (Exception ignored) { }
+            locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    0L,
+                    0f,
+                    this,
+                    Looper.getMainLooper());
+
+            if (!gnssCallbackRegistered) {
+                gnssCallbackRegistered =
+                        locationManager.registerGnssStatusCallback(
+                                gnssStatusCallback,
+                                new Handler(Looper.getMainLooper()));
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private void stopLocation() {
-        try { if (locationManager != null) locationManager.removeUpdates(this); } catch (Exception ignored) { }
-    }
-
-    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
-        super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == REQ_LOCATION && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startLocation();
-    }
-
-    @Override public void onSensorChanged(SensorEvent event) {
-        final long ns = event.timestamp;
-        float dt = lastSensorNs == 0L ? 0.02f : Math.max(0.002f, Math.min(0.1f, (ns - lastSensorNs) / 1_000_000_000f));
-        lastSensorNs = ns;
-
-        float[] linear = new float[3];
-        if (nativeLinearSensor) {
-            linear[0] = event.values[0]; linear[1] = event.values[1]; linear[2] = event.values[2];
-        } else {
-            float gAlpha = LPF_TAU_S / (LPF_TAU_S + dt);
-            for (int i = 0; i < 3; i++) {
-                gravity[i] = gAlpha * gravity[i] + (1f - gAlpha) * event.values[i];
-                linear[i] = event.values[i] - gravity[i];
-            }
-        }
-
-        float alpha = dt / (LPF_TAU_S + dt);
-        for (int i = 0; i < 3; i++) filtered[i] += alpha * (linear[i] - filtered[i]);
-
-        updateCalibration();
-        if (calibrated && calibrationState == 0) {
-            float raw = dot(filtered, axis) - zeroBias;
-            longitudinal = Math.abs(raw) < DEAD_ZONE ? 0f : raw;
-        } else {
-            longitudinal = 0f;
-        }
-        view.invalidate();
-    }
-
-    private void beginCalibration() {
-        calibrated = false;
-        calibrationState = 1;
-        calibrationStartMs = SystemClock.elapsedRealtime();
-        calibrationSamples = 0;
-        for (int i = 0; i < 3; i++) {
-            calibrationMean[i] = 0;
-            for (int j = 0; j < 3; j++) covariance[i][j] = 0;
-        }
-        message = "CALIBRACIÓN: espera 3 s; después acelera suavemente y recto";
-    }
-
-    private void updateCalibration() {
-        if (calibrationState == 0) return;
-        long elapsed = SystemClock.elapsedRealtime() - calibrationStartMs;
-        if (calibrationState == 1 && elapsed >= 3000L) {
-            calibrationState = 2;
-            message = "ACELERA SUAVEMENTE HACIA DELANTE durante 5 s";
-        }
-        if (calibrationState == 2) {
-            float mag = magnitude(filtered);
-            if (mag > 0.10f && mag < 4.5f) {
-                calibrationSamples++;
-                for (int i = 0; i < 3; i++) {
-                    calibrationMean[i] += filtered[i];
-                    for (int j = 0; j < 3; j++) covariance[i][j] += filtered[i] * filtered[j];
+        try {
+            if (locationManager != null) {
+                locationManager.removeUpdates(this);
+                if (gnssCallbackRegistered) {
+                    locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
+                    gnssCallbackRegistered = false;
                 }
             }
-            if (elapsed >= 8000L) finishCalibration();
+        } catch (Exception ignored) {
         }
     }
 
-    private void finishCalibration() {
-        calibrationState = 0;
-        if (calibrationSamples < 15) {
-            message = "Calibración insuficiente. Repite con una aceleración más clara";
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQ_LOCATION
+                && results.length > 0
+                && results[0] == PackageManager.PERMISSION_GRANTED) {
+            startLocation();
+        }
+    }
+
+    @Override
+    public void onLocationChanged(Location location) {
+        if (location == null) return;
+
+        long currentTimeMs = location.getElapsedRealtimeNanos() / 1_000_000L;
+        float currentHorizontalAccuracy =
+                location.hasAccuracy() ? location.getAccuracy() : Float.NaN;
+
+        if (!location.hasSpeed()) {
+            gpsAccelerationValid = false;
+            previousGpsLocation = new Location(location);
+            previousGpsTimeMs = currentTimeMs;
+            previousGpsSpeedAccuracy = Float.NaN;
+            previousGpsHorizontalAccuracy = currentHorizontalAccuracy;
+            invalidateView();
             return;
         }
-        double[] v = new double[]{1, 1, 1};
-        normalize(v);
-        for (int n = 0; n < 20; n++) {
-            double[] next = new double[3];
-            for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) next[i] += covariance[i][j] * v[j];
-            normalize(next);
-            v = next;
-        }
-        double sign = v[0] * calibrationMean[0] + v[1] * calibrationMean[1] + v[2] * calibrationMean[2];
-        if (sign < 0) for (int i = 0; i < 3; i++) v[i] = -v[i];
-        axis[0] = (float) v[0]; axis[1] = (float) v[1]; axis[2] = (float) v[2];
-        zeroBias = dot(filtered, axis);
-        calibrated = true;
-        prefs.edit().putBoolean("valid", true).putFloat("x", axis[0]).putFloat("y", axis[1]).putFloat("z", axis[2]).putFloat("bias", zeroBias).apply();
-        message = "Calibrado. No muevas el teléfono en su soporte";
+
+        float currentSpeed = Math.max(0f, location.getSpeed());
+        float currentSpeedAccuracy =
+                location.hasSpeedAccuracy()
+                        ? location.getSpeedAccuracyMetersPerSecond()
+                        : Float.NaN;
+
+        updateGpsAcceleration(
+                location,
+                currentTimeMs,
+                currentSpeed,
+                currentSpeedAccuracy,
+                currentHorizontalAccuracy);
+
+        gpsSpeed = currentSpeed;
+        gpsSpeedAccuracy = currentSpeedAccuracy;
+        gpsHorizontalAccuracy = currentHorizontalAccuracy;
+        lastGpsMs = currentTimeMs;
+        invalidateView();
     }
 
-    private void setZero() {
-        if (!calibrated) return;
-        zeroBias = dot(filtered, axis);
-        prefs.edit().putFloat("bias", zeroBias).apply();
-        message = "Cero ajustado";
-    }
+    private void updateGpsAcceleration(
+            Location location,
+            long currentTimeMs,
+            float currentSpeed,
+            float currentSpeedAccuracy,
+            float currentHorizontalAccuracy) {
 
-    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
+        gpsAccelerationValid = false;
+        gpsAccelerationRaw = Float.NaN;
+        gpsAccelerationUncertainty = Float.NaN;
+        gpsPositionConsistencyError = Float.NaN;
 
-    @Override public void onLocationChanged(Location location) {
-        if (location != null && location.hasSpeed()) {
-            gpsSpeed = Math.max(0f, location.getSpeed());
-            if (Build.VERSION.SDK_INT >= 26 && location.hasSpeedAccuracy()) gpsAccuracy = location.getSpeedAccuracyMetersPerSecond();
-            lastGpsMs = SystemClock.elapsedRealtime();
-            view.invalidate();
-        }
-    }
-    @Override public void onProviderEnabled(String provider) { }
-    @Override public void onProviderDisabled(String provider) { }
-    @SuppressWarnings("deprecation") @Override public void onStatusChanged(String provider, int status, Bundle extras) { }
+        if (previousGpsLocation != null && previousGpsTimeMs > 0L) {
+            float dt = (currentTimeMs - previousGpsTimeMs) / 1000f;
+            gpsLastIntervalS = dt;
+            gpsUpdateHz = dt > 0f ? 1f / dt : 0f;
 
-    private static float dot(float[] a, float[] b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
-    private static float magnitude(float[] a) { return (float)Math.sqrt(dot(a, a)); }
-    private static void normalize(double[] v) {
-        double m = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-        if (m < 1e-9) { v[0]=1; v[1]=0; v[2]=0; return; }
-        for (int i=0;i<3;i++) v[i] /= m;
-    }
-    private static float clamp(float x, float lo, float hi) { return Math.max(lo, Math.min(hi, x)); }
-    private static float level(float a, float max) {
-        if (a <= DEAD_ZONE) return 0f;
-        float u = (float)(Math.log1p((a-DEAD_ZONE)/0.15f) / Math.log1p((max-DEAD_ZONE)/0.15f));
-        return clamp(u * 10f, 0f, 10f);
-    }
+            if (dt >= GPS_MIN_INTERVAL_S && dt <= GPS_MAX_INTERVAL_S) {
+                float rawAcceleration = (currentSpeed - previousGpsSpeed) / dt;
+                gpsAccelerationRaw = rawAcceleration;
 
-    private final class LedView extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
-        LedView(Context c) { super(c); setBackgroundColor(Color.BLACK); }
+                float displacement = previousGpsLocation.distanceTo(location);
+                float expectedDisplacement =
+                        0.5f * (previousGpsSpeed + currentSpeed) * dt;
+                float positionError = Math.abs(displacement - expectedDisplacement);
+                gpsPositionConsistencyError = positionError;
 
-        @Override protected void onDraw(Canvas c) {
-            super.onDraw(c);
-            int w=getWidth(), h=getHeight();
-            float top=h*0.26f, bottom=h*0.73f, side=w*0.035f, gap=w*0.045f;
-            float slot=(w-side*2-gap)/20f, sw=slot*0.72f, cx=w/2f;
-            float green=level(Math.max(0,longitudinal),3.5f);
-            float red=level(Math.max(0,-longitudinal),7f);
-            for(int i=0;i<10;i++) {
-                float lx=cx-gap/2-slot*(i+1)+(slot-sw)/2;
-                float rx=cx+gap/2+slot*i+(slot-sw)/2;
-                segment(c,lx,top,sw,bottom-top,Color.rgb(0,255,70),green-i);
-                segment(c,rx,top,sw,bottom-top,Color.rgb(255,35,25),red-i);
+                float currentPositionAllowance =
+                        Float.isNaN(currentHorizontalAccuracy)
+                                ? 10f
+                                : currentHorizontalAccuracy;
+                float previousPositionAllowance =
+                        Float.isNaN(previousGpsHorizontalAccuracy)
+                                ? 10f
+                                : previousGpsHorizontalAccuracy;
+                float positionTolerance =
+                        Math.max(
+                                5f,
+                                currentPositionAllowance
+                                        + previousPositionAllowance
+                                        + Math.max(2f, expectedDisplacement * 0.60f));
+
+                boolean positionCoherent = positionError <= positionTolerance;
+                boolean physicallyPlausible =
+                        Math.abs(rawAcceleration) <= GPS_ACCELERATION_MAX_ABS;
+
+                if (!Float.isNaN(currentSpeedAccuracy)
+                        && !Float.isNaN(previousGpsSpeedAccuracy)) {
+                    gpsAccelerationUncertainty =
+                            (float)
+                                    (Math.sqrt(
+                                                    currentSpeedAccuracy * currentSpeedAccuracy
+                                                            + previousGpsSpeedAccuracy
+                                                                    * previousGpsSpeedAccuracy)
+                                            / dt);
+                }
+
+                boolean uncertaintyAcceptable =
+                        Float.isNaN(gpsAccelerationUncertainty)
+                                || gpsAccelerationUncertainty <= 6.0f;
+
+                float speedQuality =
+                        Float.isNaN(gpsAccelerationUncertainty)
+                                ? 0.45f
+                                : 1f - clamp(gpsAccelerationUncertainty / 4.0f, 0f, 1f);
+                float positionQuality =
+                        1f - clamp(positionError / positionTolerance, 0f, 1f);
+                gpsAccelerationQuality =
+                        clamp(0.65f * speedQuality + 0.35f * positionQuality, 0f, 1f);
+
+                if (positionCoherent && physicallyPlausible && uncertaintyAcceptable) {
+                    float alpha = dt / (GPS_ACCELERATION_TAU_S + dt);
+                    boolean previousEstimateStale =
+                            lastGpsAccelerationMs == 0L
+                                    || currentTimeMs - lastGpsAccelerationMs
+                                            > GPS_ACCELERATION_STALE_MS;
+
+                    if (previousEstimateStale) {
+                        gpsAccelerationFiltered = rawAcceleration;
+                    } else {
+                        gpsAccelerationFiltered +=
+                                alpha * (rawAcceleration - gpsAccelerationFiltered);
+                    }
+
+                    lastGpsAccelerationMs = currentTimeMs;
+                    gpsAccelerationValid = true;
+                }
             }
-            drawButton(c,0,"CALIBRAR"); drawButton(c,1,showInfo?"OCULTAR INFO":"MOSTRAR INFO"); drawButton(c,2,"AJUSTAR CERO");
-            if(showInfo) drawInfo(c,w,h);
-            paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(h*0.038f); paint.setColor(Color.LTGRAY);
-            c.drawText(message,w/2f,h*0.88f,paint);
-            paint.setTextSize(h*0.027f); paint.setColor(Color.GRAY);
-            c.drawText("Uso experimental · teléfono fijado · no manipular al conducir",w/2f,h*0.97f,paint);
         }
 
-        private void segment(Canvas c,float x,float y,float width,float height,int active,float amount) {
-            paint.setColor(amount>0 ? active : Color.rgb(18,18,18));
-            paint.setAlpha(amount>=1?255:amount>0?(int)(60+195*amount):255);
-            rect.set(x,y,x+width,y+height); c.drawRoundRect(rect,width*0.18f,width*0.18f,paint); paint.setAlpha(255);
+        previousGpsLocation = new Location(location);
+        previousGpsTimeMs = currentTimeMs;
+        previousGpsSpeed = currentSpeed;
+        previousGpsSpeedAccuracy = currentSpeedAccuracy;
+        previousGpsHorizontalAccuracy = currentHorizontalAccuracy;
+    }
+
+    @Override
+    public void onProviderEnabled(String provider) {
+        invalidateView();
+    }
+
+    @Override
+    public void onProviderDisabled(String provider) {
+        gpsAccelerationValid = false;
+        invalidateView();
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onStatusChanged(String provider, int status, Bundle extras) {
+    }
+
+    private void invalidateView() {
+        if (view != null) view.invalidate();
+    }
+
+    private static float clamp(float value, float minimum, float maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static float signedFillFraction(float value) {
+        float magnitude = Math.abs(value);
+        if (magnitude <= VISUAL_DEAD_ZONE) return 0f;
+
+        float maximum = ACCELERATION_FULL_SCALE;
+        float normalized =
+                (float)
+                        (Math.log(magnitude / VISUAL_DEAD_ZONE)
+                                / Math.log(maximum / VISUAL_DEAD_ZONE));
+        return clamp(normalized, 0f, 1f);
+    }
+
+    private final class GpsView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rectangle = new RectF();
+
+        GpsView(Context context) {
+            super(context);
+            setBackgroundColor(Color.BLACK);
         }
 
-        private void drawButton(Canvas c,int index,String label) {
-            float margin=getWidth()*0.02f,gap=getWidth()*0.012f,bw=(getWidth()-2*margin-2*gap)/3f;
-            float x=margin+index*(bw+gap), y=getHeight()*0.035f, bh=getHeight()*0.13f;
-            paint.setColor(Color.rgb(32,32,32)); rect.set(x,y,x+bw,y+bh); c.drawRoundRect(rect,bh*0.2f,bh*0.2f,paint);
-            paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(getHeight()*0.045f); paint.setColor(Color.WHITE);
-            c.drawText(label,x+bw/2,y+bh*0.68f,paint);
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+
+            int width = getWidth();
+            int height = getHeight();
+
+            drawHeader(canvas, width, height);
+            drawSpeedPanel(canvas, width, height);
+            drawAccelerationPanel(canvas, width, height);
+
+            if (showInfo) drawDiagnostics(canvas, width, height);
+
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.020f);
+            paint.setColor(Color.GRAY);
+            canvas.drawText(
+                    "Solo GPS · uso experimental · no manipular al conducir",
+                    width / 2f,
+                    height * 0.974f,
+                    paint);
         }
 
-        private void drawInfo(Canvas c,int w,int h) {
-            paint.setTextAlign(Paint.Align.LEFT); paint.setTextSize(h*0.034f); paint.setColor(Color.rgb(190,190,190));
-            String gpsAge=lastGpsMs==0?"sin datos":(SystemClock.elapsedRealtime()-lastGpsMs)+" ms";
-            String[] lines={
-                String.format(Locale.US,"Aceleración: %+.3f m/s²",longitudinal),
-                String.format(Locale.US,"GPS: %.1f km/h · edad %s",gpsSpeed*3.6f,gpsAge),
-                "Sensor: "+(nativeLinearSensor?"aceleración lineal":"acelerómetro con gravedad estimada"),
-                String.format(Locale.US,"Eje aprendido: [%.2f, %.2f, %.2f]",axis[0],axis[1],axis[2]),
-                "Estado: "+(calibrated?"calibrado":"sin calibrar")
-            };
-            float y=h*0.78f; for(String s:lines){ c.drawText(s,w*0.035f,y,paint); y+=h*0.042f; }
+        private void drawHeader(Canvas canvas, int width, int height) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.039f);
+            paint.setColor(Color.WHITE);
+            canvas.drawText(
+                    "GPS · ACELERACIÓN DOMINANTE",
+                    width * 0.035f,
+                    height * 0.078f,
+                    paint);
+
+            float buttonLeft = width * 0.545f;
+            float buttonTop = height * 0.020f;
+            float buttonRight = width * 0.735f;
+            float buttonBottom = height * 0.105f;
+            rectangle.set(buttonLeft, buttonTop, buttonRight, buttonBottom);
+            paint.setColor(Color.rgb(32, 32, 32));
+            canvas.drawRoundRect(rectangle, height * 0.018f, height * 0.018f, paint);
+
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.024f);
+            paint.setColor(Color.WHITE);
+            canvas.drawText(
+                    showInfo ? "OCULTAR INFO" : "MOSTRAR INFO",
+                    (buttonLeft + buttonRight) / 2f,
+                    buttonTop + (buttonBottom - buttonTop) * 0.64f,
+                    paint);
+
+            drawBatteryThermometer(canvas, width, height);
         }
 
-        @Override public boolean onTouchEvent(MotionEvent e) {
-            if(e.getAction()!=MotionEvent.ACTION_UP) return true;
-            float third=getWidth()/3f;
-            if(e.getY()<getHeight()*0.2f) {
-                if(e.getX()<third) beginCalibration();
-                else if(e.getX()<2*third) showInfo=!showInfo;
-                else setZero();
+        private void drawBatteryThermometer(Canvas canvas, int width, int height) {
+            float left = width * 0.765f;
+            float top = height * 0.015f;
+            float right = width * 0.965f;
+            float bottom = height * 0.110f;
+
+            rectangle.set(left, top, right, bottom);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(16, 20, 24));
+            canvas.drawRoundRect(rectangle, height * 0.018f, height * 0.018f, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, height * 0.0025f));
+            paint.setColor(Color.rgb(95, 110, 125));
+            canvas.drawRoundRect(rectangle, height * 0.018f, height * 0.018f, paint);
+            paint.setStyle(Paint.Style.FILL);
+
+            int temperatureColor;
+            if (Float.isNaN(batteryTemperatureC)) {
+                temperatureColor = Color.rgb(145, 145, 145);
+            } else if (batteryTemperatureC >= 45f) {
+                temperatureColor = Color.rgb(255, 65, 45);
+            } else if (batteryTemperatureC >= 40f) {
+                temperatureColor = Color.rgb(255, 205, 70);
+            } else {
+                temperatureColor = Color.WHITE;
+            }
+
+            float iconX = left + (right - left) * 0.135f;
+            float stemTop = top + (bottom - top) * 0.20f;
+            float stemBottom = top + (bottom - top) * 0.68f;
+            float stemHalfWidth = Math.max(2f, width * 0.0040f);
+            float bulbRadius = Math.max(4f, height * 0.013f);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1.5f, height * 0.0028f));
+            paint.setColor(Color.rgb(195, 205, 215));
+            rectangle.set(
+                    iconX - stemHalfWidth,
+                    stemTop,
+                    iconX + stemHalfWidth,
+                    stemBottom);
+            canvas.drawRoundRect(rectangle, stemHalfWidth, stemHalfWidth, paint);
+            canvas.drawCircle(iconX, stemBottom + bulbRadius * 0.45f, bulbRadius, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(temperatureColor);
+            float levelFraction =
+                    Float.isNaN(batteryTemperatureC)
+                            ? 0f
+                            : clamp((batteryTemperatureC - 20f) / 30f, 0f, 1f);
+            float fillTop = stemBottom - (stemBottom - stemTop) * levelFraction;
+            canvas.drawRect(
+                    iconX - stemHalfWidth * 0.45f,
+                    fillTop,
+                    iconX + stemHalfWidth * 0.45f,
+                    stemBottom,
+                    paint);
+            canvas.drawCircle(
+                    iconX,
+                    stemBottom + bulbRadius * 0.45f,
+                    bulbRadius * 0.68f,
+                    paint);
+
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.0155f);
+            paint.setColor(Color.rgb(175, 195, 215));
+            canvas.drawText(
+                    "TEMP. BATERÍA",
+                    left + (right - left) * 0.255f,
+                    top + (bottom - top) * 0.36f,
+                    paint);
+
+            String temperatureText =
+                    Float.isNaN(batteryTemperatureC)
+                            ? "--.- °C"
+                            : String.format(Locale.US, "%.1f °C", batteryTemperatureC);
+            paint.setTextSize(height * 0.030f);
+            paint.setColor(temperatureColor);
+            canvas.drawText(
+                    temperatureText,
+                    left + (right - left) * 0.255f,
+                    top + (bottom - top) * 0.78f,
+                    paint);
+        }
+
+        private void drawSpeedPanel(Canvas canvas, int width, int height) {
+            float left = width * 0.035f;
+            float right = width * 0.470f;
+            float top = height * 0.120f;
+            float bottom = height * 0.290f;
+            drawPanelBackground(canvas, left, top, right, bottom);
+
+            long ageMs =
+                    lastGpsMs == 0L
+                            ? Long.MAX_VALUE
+                            : Math.max(0L, SystemClock.elapsedRealtime() - lastGpsMs);
+            boolean fresh = lastGpsMs != 0L && ageMs <= GPS_SPEED_STALE_MS;
+
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.023f);
+            paint.setColor(Color.rgb(170, 195, 220));
+            canvas.drawText("VELOCIDAD GPS", left + width * 0.018f, top + height * 0.038f, paint);
+
+            String speedText =
+                    fresh
+                            ? String.format(Locale.US, "%.4f", gpsSpeed * 3.6f)
+                            : "---";
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.075f);
+            fitText(speedText, (right - left) * 0.70f);
+            paint.setColor(fresh ? Color.WHITE : Color.rgb(115, 115, 115));
+            canvas.drawText(speedText, (left + right) / 2f, top + height * 0.112f, paint);
+
+            paint.setTextSize(height * 0.025f);
+            paint.setColor(Color.rgb(195, 210, 225));
+            canvas.drawText("km/h", (left + right) / 2f, top + height * 0.148f, paint);
+
+            String footer;
+            if (!fresh) {
+                footer = gnssStarted ? "buscando fijación" : "GPS inactivo";
+            } else if (Float.isNaN(gpsSpeedAccuracy)) {
+                footer = String.format(Locale.US, "edad %d ms · precisión n/d", ageMs);
+            } else {
+                footer = String.format(
+                        Locale.US,
+                        "edad %d ms · ±%.2f km/h",
+                        ageMs,
+                        gpsSpeedAccuracy * 3.6f);
+            }
+            paint.setTextSize(height * 0.018f);
+            paint.setColor(fresh ? Color.rgb(190, 205, 220) : Color.rgb(255, 190, 70));
+            canvas.drawText(footer, (left + right) / 2f, bottom - height * 0.014f, paint);
+        }
+
+        private void drawAccelerationPanel(Canvas canvas, int width, int height) {
+            float left = width * 0.035f;
+            float right = width * 0.965f;
+            float top = height * 0.315f;
+            float bottom = showInfo ? height * 0.735f : height * 0.900f;
+            float panelHeight = bottom - top;
+            drawPanelBackground(canvas, left, top, right, bottom);
+
+            long ageMs =
+                    lastGpsAccelerationMs == 0L
+                            ? Long.MAX_VALUE
+                            : Math.max(
+                                    0L,
+                                    SystemClock.elapsedRealtime()
+                                            - lastGpsAccelerationMs);
+            boolean fresh =
+                    gpsAccelerationValid
+                            && lastGpsAccelerationMs != 0L
+                            && ageMs <= GPS_ACCELERATION_STALE_MS;
+
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.030f);
+            paint.setColor(Color.rgb(185, 205, 225));
+            canvas.drawText(
+                    "ACELERACIÓN GPS",
+                    left + width * 0.020f,
+                    top + panelHeight * 0.105f,
+                    paint);
+
+            String accelerationText =
+                    fresh
+                            ? String.format(
+                                    Locale.US,
+                                    "%+.4f",
+                                    gpsAccelerationFiltered * ACCELERATION_DISPLAY_FACTOR)
+                            : "---";
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.105f);
+            fitText(accelerationText, (right - left) * 0.50f);
+            paint.setColor(fresh ? Color.WHITE : Color.rgb(115, 115, 115));
+            canvas.drawText(
+                    accelerationText,
+                    (left + right) / 2f,
+                    top + panelHeight * 0.305f,
+                    paint);
+
+            paint.setTextSize(height * 0.030f);
+            paint.setColor(Color.rgb(195, 210, 225));
+            canvas.drawText(
+                    "km/(h·s)",
+                    (left + right) / 2f,
+                    top + panelHeight * 0.395f,
+                    paint);
+
+            float barLeft = left + (right - left) * 0.025f;
+            float barRight = right - (right - left) * 0.025f;
+            float barTop = top + panelHeight * 0.475f;
+            float barBottom = top + panelHeight * 0.805f;
+            float greenAxisLabelY = barTop - height * 0.018f;
+            float redAxisLabelY = top + panelHeight * 0.900f;
+            drawAccelerationBar(
+                    canvas,
+                    barLeft,
+                    barRight,
+                    barTop,
+                    barBottom,
+                    greenAxisLabelY,
+                    redAxisLabelY,
+                    fresh ? gpsAccelerationFiltered : 0f,
+                    fresh ? gpsAccelerationUncertainty : Float.NaN);
+
+            boolean uncertainSignal =
+                    fresh
+                            && !Float.isNaN(gpsAccelerationUncertainty)
+                            && Math.abs(gpsAccelerationFiltered)
+                                    <= gpsAccelerationUncertainty;
+            String status =
+                    !fresh
+                            ? "SIN ESTIMACIÓN VÁLIDA"
+                            : uncertainSignal
+                                    ? "SEÑAL INCIERTA"
+                                    : accelerationQualityText();
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(height * 0.022f);
+            paint.setColor(
+                    !fresh
+                            ? Color.rgb(255, 190, 70)
+                            : uncertainSignal
+                                    ? Color.rgb(255, 190, 70)
+                                    : accelerationQualityColor());
+            canvas.drawText(
+                    status + " · zona neutra ±0.054 km/(h·s)",
+                    (left + right) / 2f,
+                    top + panelHeight * 0.955f,
+                    paint);
+        }
+
+        private void drawDiagnostics(Canvas canvas, int width, int height) {
+            float top = height * 0.785f;
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(height * 0.021f);
+            paint.setColor(Color.rgb(205, 210, 215));
+
+            long speedAge =
+                    lastGpsMs == 0L
+                            ? -1L
+                            : Math.max(0L, SystemClock.elapsedRealtime() - lastGpsMs);
+            long accelerationAge =
+                    lastGpsAccelerationMs == 0L
+                            ? -1L
+                            : Math.max(
+                                    0L,
+                                    SystemClock.elapsedRealtime()
+                                            - lastGpsAccelerationMs);
+
+            String speedAccuracyText =
+                    Float.isNaN(gpsSpeedAccuracy)
+                            ? "n/d"
+                            : String.format(Locale.US, "%.3f m/s", gpsSpeedAccuracy);
+            String positionAccuracyText =
+                    Float.isNaN(gpsHorizontalAccuracy)
+                            ? "n/d"
+                            : String.format(Locale.US, "%.1f m", gpsHorizontalAccuracy);
+            String accelerationUncertaintyText =
+                    Float.isNaN(gpsAccelerationUncertainty)
+                            ? "n/d"
+                            : String.format(
+                                    Locale.US,
+                                    "%.3f km/(h·s)",
+                                    gpsAccelerationUncertainty
+                                            * ACCELERATION_DISPLAY_FACTOR);
+            String rawAccelerationText =
+                    Float.isNaN(gpsAccelerationRaw)
+                            ? "n/d"
+                            : String.format(
+                                    Locale.US,
+                                    "%+.4f km/(h·s)",
+                                    gpsAccelerationRaw * ACCELERATION_DISPLAY_FACTOR);
+            String consistencyText =
+                    Float.isNaN(gpsPositionConsistencyError)
+                            ? "n/d"
+                            : String.format(
+                                    Locale.US,
+                                    "%.2f m",
+                                    gpsPositionConsistencyError);
+
+            String[] lines =
+                    new String[]{
+                        String.format(
+                                Locale.US,
+                                "GNSS: %.2f Hz · intervalo %.0f ms · satélites %d/%d",
+                                gpsUpdateHz,
+                                gpsLastIntervalS * 1000f,
+                                gnssSatellitesUsed,
+                                gnssSatellitesVisible),
+                        String.format(
+                                Locale.US,
+                                "Velocidad: precisión %s · posición %s · edad %s",
+                                speedAccuracyText,
+                                positionAccuracyText,
+                                speedAge < 0L ? "n/d" : speedAge + " ms"),
+                        String.format(
+                                Locale.US,
+                                "Aceleración: cruda %s · filtrada %+.4f km/(h·s) · incertidumbre %s",
+                                rawAccelerationText,
+                                gpsAccelerationFiltered * ACCELERATION_DISPLAY_FACTOR,
+                                accelerationUncertaintyText),
+                        String.format(
+                                Locale.US,
+                                "Coherencia de posición: error %s · calidad %.0f%% · edad %s",
+                                consistencyText,
+                                gpsAccelerationQuality * 100f,
+                                accelerationAge < 0L ? "n/d" : accelerationAge + " ms")
+                    };
+
+            float y = top;
+            for (String line : lines) {
+                canvas.drawText(line, width * 0.040f, y, paint);
+                y += height * 0.040f;
+            }
+        }
+
+        private void drawPanelBackground(
+                Canvas canvas,
+                float left,
+                float top,
+                float right,
+                float bottom) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(12, 16, 20));
+            rectangle.set(left, top, right, bottom);
+            canvas.drawRoundRect(rectangle, getHeight() * 0.025f, getHeight() * 0.025f, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, getHeight() * 0.003f));
+            paint.setColor(Color.rgb(90, 105, 120));
+            canvas.drawRoundRect(rectangle, getHeight() * 0.025f, getHeight() * 0.025f, paint);
+            paint.setStyle(Paint.Style.FILL);
+        }
+
+        private void drawAccelerationBar(
+                Canvas canvas,
+                float left,
+                float right,
+                float top,
+                float bottom,
+                float greenAxisLabelY,
+                float redAxisLabelY,
+                float value,
+                float uncertainty) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setAntiAlias(false);
+            paint.setColor(Color.rgb(24, 24, 24));
+            canvas.drawRect(left, top, right, bottom, paint);
+
+            String[] greenTickLabels =
+                    new String[]{"0.25", "0.5", "1", "2", "4", "8", "16", "32.4"};
+            float[] greenTickDisplayValues =
+                    new float[]{0.25f, 0.5f, 1f, 2f, 4f, 8f, 16f, 32.4f};
+            String[] redTickLabels =
+                    new String[]{"−0.25", "−0.5", "−1", "−2", "−4", "−8", "−16", "−32.4"};
+            float[] redTickDisplayValues =
+                    new float[]{-0.25f, -0.5f, -1f, -2f, -4f, -8f, -16f, -32.4f};
+
+            float barWidth = right - left;
+            paint.setAntiAlias(true);
+            paint.setTextSize(getHeight() * 0.0175f);
+
+            float[] greenXs = new float[greenTickLabels.length];
+            for (int i = 0; i < greenTickLabels.length; i++) {
+                float tickValue = greenTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
+                greenXs[i] = left + barWidth * signedFillFraction(tickValue);
+            }
+            drawNonOverlappingAxisLabels(
+                    canvas,
+                    greenTickLabels,
+                    greenXs,
+                    greenAxisLabelY,
+                    left,
+                    right,
+                    Color.rgb(170, 255, 195));
+
+            float[] redXs = new float[redTickLabels.length];
+            for (int i = 0; i < redTickLabels.length; i++) {
+                float tickValue = redTickDisplayValues[i] / ACCELERATION_DISPLAY_FACTOR;
+                redXs[i] = left + barWidth * signedFillFraction(tickValue);
+            }
+            drawNonOverlappingAxisLabels(
+                    canvas,
+                    redTickLabels,
+                    redXs,
+                    redAxisLabelY,
+                    left,
+                    right,
+                    Color.rgb(255, 175, 170));
+
+            float fraction = signedFillFraction(value);
+            if (fraction <= 0f) return;
+
+            float pixels = barWidth * fraction;
+            boolean negative = value < -VISUAL_DEAD_ZONE;
+            float activeLeft = left;
+            float activeRight = left + pixels;
+            int activeColor =
+                    negative
+                            ? Color.rgb(255, 35, 25)
+                            : Color.rgb(0, 255, 70);
+
+            paint.setAntiAlias(false);
+            paint.setColor(activeColor);
+            canvas.drawRect(activeLeft, top, activeRight, bottom, paint);
+
+            if (!Float.isNaN(uncertainty) && uncertainty > 0f) {
+                float magnitude = Math.abs(value);
+                float lowMagnitude = Math.max(VISUAL_DEAD_ZONE, magnitude - uncertainty);
+                float maximum = ACCELERATION_FULL_SCALE;
+                float highMagnitude = Math.min(maximum, magnitude + uncertainty);
+                float lowFraction =
+                        lowMagnitude <= VISUAL_DEAD_ZONE
+                                ? 0f
+                                : signedFillFraction(negative ? -lowMagnitude : lowMagnitude);
+                float highFraction =
+                        signedFillFraction(negative ? -highMagnitude : highMagnitude);
+                float bandLeft = left + barWidth * lowFraction;
+                float bandRight = left + barWidth * highFraction;
+                paint.setColor(Color.argb(105, 255, 215, 60));
+                canvas.drawRect(bandLeft, top, bandRight, bottom, paint);
+            }
+
+            float[] activeTickDisplayValues =
+                    negative ? redTickDisplayValues : greenTickDisplayValues;
+            float currentDisplayMagnitude =
+                    Math.abs(value * ACCELERATION_DISPLAY_FACTOR);
+            paint.setStrokeWidth(Math.max(1f, getHeight() * 0.0022f));
+            for (float displayValue : activeTickDisplayValues) {
+                float tickValue = displayValue / ACCELERATION_DISPLAY_FACTOR;
+                float tickFraction = signedFillFraction(tickValue);
+                float x = left + barWidth * tickFraction;
+                boolean reached = Math.abs(displayValue) <= currentDisplayMagnitude + 0.0001f;
+                paint.setColor(reached ? Color.WHITE : Color.rgb(95, 100, 105));
+                paint.setAlpha(reached ? 180 : 105);
+                canvas.drawLine(x, top, x, bottom, paint);
+            }
+            paint.setAlpha(255);
+
+            float edgeX = activeRight;
+            float markerWidth = Math.max(2f, getWidth() * 0.0022f);
+            paint.setColor(Color.WHITE);
+            canvas.drawRect(
+                    edgeX - markerWidth / 2f,
+                    top,
+                    edgeX + markerWidth / 2f,
+                    bottom,
+                    paint);
+
+            paint.setAntiAlias(true);
+            String currentText =
+                    String.format(
+                            Locale.US,
+                            "%+.2f",
+                            value * ACCELERATION_DISPLAY_FACTOR);
+            paint.setTextSize(getHeight() * 0.024f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            float textPadding = getHeight() * 0.010f;
+            float textWidth = paint.measureText(currentText);
+            float labelHalfWidth = textWidth / 2f + textPadding;
+            float labelCenterX =
+                    clamp(
+                            edgeX,
+                            left + labelHalfWidth + textPadding,
+                            right - labelHalfWidth - textPadding);
+            float labelTop = top + (bottom - top) * 0.075f;
+            float labelBottom = top + (bottom - top) * 0.365f;
+
+            rectangle.set(
+                    labelCenterX - labelHalfWidth,
+                    labelTop,
+                    labelCenterX + labelHalfWidth,
+                    labelBottom);
+            paint.setColor(Color.argb(205, 0, 0, 0));
+            canvas.drawRoundRect(
+                    rectangle,
+                    getHeight() * 0.012f,
+                    getHeight() * 0.012f,
+                    paint);
+
+            paint.setColor(Color.WHITE);
+            Paint.FontMetrics metrics = paint.getFontMetrics();
+            float textY =
+                    (labelTop + labelBottom) / 2f
+                            - (metrics.ascent + metrics.descent) / 2f;
+            canvas.drawText(currentText, labelCenterX, textY, paint);
+        }
+
+        private void drawNonOverlappingAxisLabels(
+                Canvas canvas,
+                String[] labels,
+                float[] positions,
+                float baseline,
+                float left,
+                float right,
+                int color) {
+            if (labels.length == 0) return;
+
+            float gap = Math.max(3f, getWidth() * 0.006f);
+            float lastLabelLeft =
+                    right - paint.measureText(labels[labels.length - 1]);
+            float previousRight = left - gap;
+            paint.setColor(color);
+
+            for (int i = 0; i < labels.length; i++) {
+                float textWidth = paint.measureText(labels[i]);
+                float x = clamp(positions[i], left, right);
+                float textLeft;
+                float textRight;
+
+                if (i == 0 || x <= left + (right - left) * 0.025f) {
+                    paint.setTextAlign(Paint.Align.LEFT);
+                    textLeft = x;
+                    textRight = x + textWidth;
+                } else if (i == labels.length - 1 || x >= right - (right - left) * 0.025f) {
+                    paint.setTextAlign(Paint.Align.RIGHT);
+                    textLeft = x - textWidth;
+                    textRight = x;
+                } else {
+                    paint.setTextAlign(Paint.Align.CENTER);
+                    textLeft = x - textWidth / 2f;
+                    textRight = x + textWidth / 2f;
+                }
+
+                boolean endpoint = i == 0 || i == labels.length - 1;
+                boolean fitsPrevious = textLeft >= previousRight + gap;
+                boolean leavesLast =
+                        i >= labels.length - 2 || textRight <= lastLabelLeft - gap;
+                if (endpoint || (fitsPrevious && leavesLast)) {
+                    canvas.drawText(labels[i], x, baseline, paint);
+                    previousRight = textRight;
+                }
+            }
+        }
+
+        private String accelerationQualityText() {
+            if (gpsAccelerationQuality >= 0.75f) return "CALIDAD ALTA";
+            if (gpsAccelerationQuality >= 0.45f) return "CALIDAD MEDIA";
+            return "CALIDAD BAJA";
+        }
+
+        private int accelerationQualityColor() {
+            if (gpsAccelerationQuality >= 0.75f) return Color.rgb(80, 255, 130);
+            if (gpsAccelerationQuality >= 0.45f) return Color.rgb(255, 215, 80);
+            return Color.rgb(255, 110, 90);
+        }
+
+        private void fitText(String text, float maximumWidth) {
+            float measuredWidth = paint.measureText(text);
+            if (measuredWidth > maximumWidth && measuredWidth > 0f) {
+                paint.setTextSize(paint.getTextSize() * maximumWidth / measuredWidth);
+            }
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (event.getAction() != MotionEvent.ACTION_UP) return true;
+
+            if (event.getX() >= getWidth() * 0.52f
+                    && event.getX() <= getWidth() * 0.75f
+                    && event.getY() <= getHeight() * 0.14f) {
+                showInfo = !showInfo;
                 invalidate();
             }
             return true;

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Renglón rojo: mayor intensidad hacia la derecha. -->
+    <path android:fillColor="#FF2D24" android:fillAlpha="0.35"
+        android:pathData="M17,27 L29,27 L29,44 L17,44 Z" />
+    <path android:fillColor="#FF2D24" android:fillAlpha="0.50"
+        android:pathData="M32,27 L44,27 L44,44 L32,44 Z" />
+    <path android:fillColor="#FF2D24" android:fillAlpha="0.68"
+        android:pathData="M47,27 L59,27 L59,44 L47,44 Z" />
+    <path android:fillColor="#FF2D24" android:fillAlpha="0.84"
+        android:pathData="M62,27 L74,27 L74,44 L62,44 Z" />
+    <path android:fillColor="#FF2D24"
+        android:pathData="M77,27 L91,27 L91,44 L77,44 Z" />
+
+    <!-- Separador luminoso. -->
+    <path android:fillColor="#D6E2EE" android:fillAlpha="0.75"
+        android:pathData="M18,52 L90,52 L90,56 L18,56 Z" />
+
+    <!-- Renglón verde: mayor intensidad hacia la izquierda. -->
+    <path android:fillColor="#00F070"
+        android:pathData="M17,64 L31,64 L31,81 L17,81 Z" />
+    <path android:fillColor="#00F070" android:fillAlpha="0.84"
+        android:pathData="M34,64 L46,64 L46,81 L34,81 Z" />
+    <path android:fillColor="#00F070" android:fillAlpha="0.68"
+        android:pathData="M49,64 L61,64 L61,81 L49,81 Z" />
+    <path android:fillColor="#00F070" android:fillAlpha="0.50"
+        android:pathData="M64,64 L76,64 L76,81 L64,81 Z" />
+    <path android:fillColor="#00F070" android:fillAlpha="0.35"
+        android:pathData="M79,64 L91,64 L91,81 L79,81 Z" />
+</vector>
