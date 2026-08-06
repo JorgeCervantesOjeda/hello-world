@@ -14,3 +14,7 @@ android {
         versionName '4.8-gps-rango-comun-izquierda-derecha'
     }
 }
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
